@@ -1,0 +1,112 @@
+name: Build and publish app
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "xray-proxy-manager/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  ARCHITECTURES: '["amd64", "aarch64"]'
+  IMAGE_NAME: xray-proxy-manager
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  init:
+    name: Initialize build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Read app version
+        id: version
+        shell: bash
+        run: |
+          version="$(awk -F': *' '$1 == "version" {gsub(/"/, "", $2); print $2; exit}' xray-proxy-manager/config.yaml)"
+          if [[ -z "${version}" ]]; then
+            echo "Unable to read version from xray-proxy-manager/config.yaml" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare architecture matrix
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@4de35182ce1e329181bffcbcc84d33db5e2c7e10 # 2026.06.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          image-name: ${{ env.IMAGE_NAME }}
+
+  build:
+    name: Build ${{ matrix.arch }} image
+    needs: init
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.init.outputs.matrix) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Build and publish image
+        uses: home-assistant/builder/actions/build-image@4de35182ce1e329181bffcbcc84d33db5e2c7e10 # 2026.06.0
+        with:
+          arch: ${{ matrix.arch }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: ./xray-proxy-manager
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ needs.init.outputs.version }}
+            latest
+          labels: |
+            io.hass.name=Xray Proxy Manager
+            io.hass.description=Управление Xray через два независимых SOCKS5-слота
+            io.hass.type=app
+            io.hass.url=https://github.com/serjeleone/xray-proxy-manager
+            org.opencontainers.image.title=Xray Proxy Manager
+            org.opencontainers.image.description=Home Assistant app for Xray outbound management with two independent SOCKS5 slots
+            org.opencontainers.image.authors=serjeleone
+            org.opencontainers.image.documentation=https://github.com/serjeleone/xray-proxy-manager/blob/main/xray-proxy-manager/DOCS.md
+          push: "true"
+          version: ${{ needs.init.outputs.version }}
+
+  manifest:
+    name: Publish multi-architecture manifest
+    needs:
+      - init
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      packages: write
+    steps:
+      - name: Publish multi-architecture image
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@4de35182ce1e329181bffcbcc84d33db5e2c7e10 # 2026.06.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image-name: ${{ env.IMAGE_NAME }}
+          image-tags: |
+            ${{ needs.init.outputs.version }}
+            latest

@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121212">
+  <title>Xray Proxy Manager</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css?ui=3">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="topbar-title">
+        <div class="eyebrow">ПРИЛОЖЕНИЕ HOME ASSISTANT</div>
+        <h1>Xray Proxy Manager</h1>
+      </div>
+      <div class="topbar-actions">
+        <button id="versionBadge" class="header-badge version-badge" type="button" aria-label="Открыть журнал изменений" aria-haspopup="dialog" aria-expanded="false">—</button>
+        <button id="logsButton" class="header-badge logs-button" type="button" aria-label="Открыть логи">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v2H4V4Zm0 5h16v2H4V9Zm0 5h11v2H4v-2Zm0 5h8v2H4v-2Z"/></svg>
+          <span>Логи</span>
+        </button>
+        <section id="changelogPopover" class="changelog-popover hidden" role="dialog" aria-modal="false" aria-labelledby="changelogTitle">
+          <header class="changelog-header">
+            <div>
+              <span class="info-label">Журнал изменений</span>
+              <h2 id="changelogTitle">Версия —</h2>
+            </div>
+            <button id="closeChangelogButton" class="changelog-close-button" type="button" aria-label="Закрыть журнал изменений">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+            </button>
+          </header>
+          <ul id="changelogList" class="changelog-list">
+            <li>Загрузка изменений…</li>
+          </ul>
+        </section>
+      </div>
+    </header>
+
+    <section class="hero-card">
+      <div class="hero-primary-row">
+        <h2 id="activeName">Активный outbound не определён</h2>
+      </div>
+
+      <div class="hero-details">
+        <div class="status-line">
+          <span id="statusDot" class="status-dot"></span>
+          <span id="xrayState">Загрузка…</span>
+        </div>
+        <p id="activeMeta">Ожидание данных</p>
+        <p id="selectorHint" class="traffic-hint">Проверка состояния selector…</p>
+        <div class="hero-actions">
+          <button id="testAllButton" class="button primary" type="button">Проверить все</button>
+          <button id="refreshButton" class="button secondary" type="button">Обновить подписку</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="settings-grid">
+      <article class="settings-card subscription-card">
+        <div class="card-heading">
+          <div>
+            <span class="info-label">Подписка</span>
+            <strong id="subscriptionState">—</strong>
+          </div>
+        </div>
+        <div class="subscription-fields">
+          <label class="subscription-url-field">
+            <span>Ссылка на подписку</span>
+            <input id="subscriptionUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…">
+          </label>
+          <label class="subscription-interval-field">
+            <span>Период, часов</span>
+            <input id="subscriptionInterval" type="number" min="0" max="720" step="1" inputmode="numeric">
+          </label>
+        </div>
+        <small id="subscriptionMeta" class="card-status">—</small>
+        <button id="saveSubscription" class="button compact" type="button">Сохранить</button>
+      </article>
+
+      <article class="settings-card checker-card">
+        <div class="card-heading">
+          <div>
+            <span class="info-label">Авто-чекер</span>
+            <strong id="autoCheckerState">—</strong>
+          </div>
+          <label class="switch" title="Включить авто-чекер">
+            <input id="autoCheckerEnabled" type="checkbox">
+            <span class="switch-track"></span>
+          </label>
+        </div>
+
+        <div class="checker-fields">
+          <label>
+            <span>Период, секунд</span>
+            <input id="autoCheckInterval" type="number" min="10" max="86400" step="1" inputmode="numeric">
+          </label>
+          <label>
+            <span>Порог ошибок, подряд</span>
+            <input id="autoCheckFailures" type="number" min="1" max="100" step="1" inputmode="numeric">
+          </label>
+          <label>
+            <span>Игнорировать страну</span>
+            <input id="autoSwitchExcludedCountries" type="text" maxlength="64" inputmode="text" autocomplete="off" placeholder="RU">
+          </label>
+          <label>
+            <span>Разница по пингу, мс</span>
+            <input id="autoSwitchMinPingDelta" type="number" min="0" max="10000" step="1" inputmode="numeric">
+          </label>
+        </div>
+
+        <div class="option-row">
+          <div>
+            <strong>Автопереключение на лучший сервер</strong>
+            <small>После завершения проверки</small>
+          </div>
+          <label class="switch" title="Автоматически выбирать лучший outbound по результатам проверки">
+            <input id="autoSwitchBestEnabled" type="checkbox">
+            <span class="switch-track"></span>
+          </label>
+        </div>
+        <small id="autoCheckerMeta" class="card-status">—</small>
+        <button id="saveAutoChecker" class="button compact" type="button">Сохранить</button>
+      </article>
+    </section>
+
+    <section class="list-section">
+      <div class="list-heading">
+        <div>
+          <h3 id="outboundHeading">Доступные outbound</h3>
+          <span id="candidateCount" class="muted">0</span>
+        </div>
+        <label class="check-control">
+          <input id="hideUnavailable" type="checkbox">
+          <span>Скрыть недоступные</span>
+        </label>
+      </div>
+
+      <div class="filters">
+        <label>
+          <span>Сортировка</span>
+          <select id="sortSelect">
+            <option value="name-asc">По алфавиту ↑</option>
+            <option value="name-desc">По алфавиту ↓</option>
+            <option value="ping-asc">По пингу ↑</option>
+            <option value="ping-desc">По пингу ↓</option>
+            <option value="protocol-asc">По типу ↑</option>
+            <option value="protocol-desc">По типу ↓</option>
+          </select>
+        </label>
+        <label>
+          <span>Протокол</span>
+          <select id="protocolFilter">
+            <option value="all">Все протоколы</option>
+          </select>
+        </label>
+        <label>
+          <span>Максимальный пинг, мс</span>
+          <input id="maxPing" type="number" min="0" max="10000" step="10" inputmode="numeric" placeholder="Без ограничения">
+        </label>
+      </div>
+    </section>
+
+    <div id="jobBanner" class="job-banner hidden"></div>
+    <section id="outboundList" class="outbound-list" aria-live="polite"></section>
+
+    <footer>
+      <span id="versionLine">—</span>
+      <span id="syncNote">—</span>
+    </footer>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <div id="logsModal" class="logs-modal hidden" role="dialog" aria-modal="true" aria-labelledby="logsModalTitle">
+    <section class="logs-window">
+      <header class="logs-header">
+        <div class="logs-header-main">
+          <span class="info-label">Журнал приложения</span>
+          <h2 id="logsModalTitle">Логи Xray Proxy Manager</h2>
+        </div>
+        <button id="closeLogsButton" class="logs-close-button" type="button" aria-label="Закрыть логи">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+        <div class="logs-search" role="search" aria-label="Поиск по логам">
+          <label class="logs-search-field" for="logsSearchInput">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 3.98 11.64L19.84 21 21 19.84l-5.36-5.36A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"/></svg>
+            <input id="logsSearchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Поиск по логам">
+          </label>
+          <span id="logsSearchCount" class="logs-search-count" aria-live="polite">0 / 0</span>
+          <button id="logsSearchPrevious" class="logs-search-button" type="button" aria-label="Предыдущее совпадение" title="Предыдущее совпадение">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.4 14.6 4.6-4.6 4.6 4.6L18 13.2l-6-6-6 6 1.4 1.4Z"/></svg>
+          </button>
+          <button id="logsSearchNext" class="logs-search-button" type="button" aria-label="Следующее совпадение" title="Следующее совпадение">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.4 9.4 4.6 4.6 4.6-4.6 1.4 1.4-6 6-6-6 1.4-1.4Z"/></svg>
+          </button>
+          <button id="logsWrapToggle" class="logs-search-button logs-wrap-button active" type="button" aria-label="Включить перенос строк" title="Включить перенос строк" aria-pressed="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v2H4V5Zm0 5h11v2H4v-2Zm0 5h9v2H4v-2Zm12.5-2.5L20 16l-3.5 3.5-1.4-1.4 1.1-1.1H14v-2h2.2l-1.1-1.1 1.4-1.4Z"/></svg>
+          </button>
+        </div>
+      </header>
+      <pre id="logsContent" class="logs-content no-wrap" tabindex="0">Загрузка логов…</pre>
+      <div class="logs-scroll-controls" aria-label="Навигация по журналу">
+        <button id="logsTopButton" class="logs-scroll-button" type="button" aria-label="К началу журнала" title="К началу журнала">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14v2H5V6Zm7 3 6 6-1.4 1.4-4.6-4.6-4.6 4.6L6 15l6-6Z"/></svg>
+        </button>
+        <button id="logsBottomButton" class="logs-scroll-button" type="button" aria-label="К концу журнала" title="К концу журнала">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 16h14v2H5v-2Zm7-3-6-6 1.4-1.4 4.6 4.6 4.6-4.6L18 7l-6 6Z"/></svg>
+        </button>
+      </div>
+      <footer class="logs-footer">
+        <span id="logsMeta">—</span>
+        <span>Обновление в реальном времени</span>
+      </footer>
+    </section>
+  </div>
+
+  <div id="restartModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="restartModalTitle">
+    <div class="modal-card">
+      <h3 id="restartModalTitle">Для применения требуется перезапуск</h3>
+      <p id="restartModalText">Настройки сохранены. Применить их сейчас?</p>
+      <div class="modal-actions">
+        <button id="applyRestartButton" class="button primary" type="button">Применить и перезапустить</button>
+        <button id="saveOnlyButton" class="button secondary" type="button">Сохранить, не применять сейчас</button>
+        <button id="cancelRestartButton" class="button ghost" type="button">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?ui=3"></script>
+</body>
+</html>
