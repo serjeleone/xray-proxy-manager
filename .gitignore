@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+
+# Ключи и сертификаты.
+*.key
+*.pem
+id_*
+
+# Локальные runtime-файлы, если они создаются при разработке в корне репозитория.
+/config.json
+/state.json
+/latencies.json
+/runtime-options.json
+/subscription.json
+
+# Артефакты сборки.
+/dist/
+/build/
+*.zip
