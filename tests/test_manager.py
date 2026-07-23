@@ -283,6 +283,53 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(instance.active_candidate_id, new.id)
         self.assertIs(instance.slots["xray-a"].draining, True)
 
+    def test_startup_prefers_cached_faster_candidate_over_remembered(self) -> None:
+        remembered = candidate("remembered", "198.51.100.60")
+        faster = candidate("faster", "198.51.100.61")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.candidates = [remembered, faster]
+        instance.state = {"active_candidate_id": remembered.id}
+        instance.config_index = 0
+        instance.auto_switch_best_enabled = True
+        instance.auto_switch_excluded_countries = "RU, Обходы белых списков"
+        instance.auto_switch_min_ping_delta_ms = 100
+        instance.latencies = {
+            remembered.id: {"status": "ok", "latency_ms": 343},
+            faster.id: {"status": "ok", "latency_ms": 141},
+        }
+
+        selected = instance.choose_initial_candidate()
+
+        self.assertEqual(selected.id, faster.id)
+
+    def test_startup_keeps_remembered_candidate_below_ping_threshold(self) -> None:
+        remembered = candidate("remembered", "198.51.100.62")
+        faster = candidate("faster", "198.51.100.63")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.candidates = [remembered, faster]
+        instance.state = {"active_candidate_id": remembered.id}
+        instance.config_index = 0
+        instance.auto_switch_best_enabled = True
+        instance.auto_switch_excluded_countries = "RU"
+        instance.auto_switch_min_ping_delta_ms = 100
+        instance.latencies = {
+            remembered.id: {"status": "ok", "latency_ms": 220},
+            faster.id: {"status": "ok", "latency_ms": 141},
+        }
+
+        selected = instance.choose_initial_candidate()
+
+        self.assertEqual(selected.id, remembered.id)
+
+    def test_auto_checker_resumes_existing_interval_after_restart(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.auto_checker_enabled = True
+        instance.auto_check_interval_seconds = 600
+        instance.state = {"auto_check_last_at": 1_000}
+
+        self.assertEqual(instance.auto_check_wait_seconds(1_450), 150.0)
+        self.assertEqual(instance.auto_check_wait_seconds(1_700), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 name: Xray Proxy Manager
-version: "0.6.2"
+version: "0.6.3"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
 description: "Управление Xray через два независимых SOCKS5-слота, проверку outbound и безопасное переключение"

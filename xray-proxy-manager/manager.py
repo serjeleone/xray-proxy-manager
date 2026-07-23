@@ -52,7 +52,7 @@ UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.6.2'
+ADDON_VERSION = '0.6.3'
 
 DIRECT_PROTOCOLS = {'freedom', 'blackhole', 'dns', 'loopback'}
 DIRECT_TAGS = {
@@ -1492,18 +1492,61 @@ class XrayManager:
                 return preferred
         return matches[0] if matches else None
 
-    def choose_initial_candidate(self) -> Candidate:
-        remembered = str(self.state.get('active_candidate_id') or '')
-        if remembered:
-            match = self.candidate_by_id(remembered)
-            if match:
-                return match
-        matching_index = [item for item in self.candidates if item.source_index == self.config_index]
-        if matching_index:
-            return matching_index[0]
-        if not self.candidates:
-            raise RuntimeError('No proxy outbounds were found in the subscription.')
-        return self.candidates[0]
+    def candidate_latency_ms(self, candidate: Candidate | None) -> int | None:
+        if candidate is None:
+            return None
+        data = self.latencies.get(candidate.id) or {}
+        latency_ms = data.get('latency_ms')
+        if data.get('status') != 'ok' or not isinstance(latency_ms, int):
+            return None
+        return latency_ms
+
+    def choose_initial_candidate(self, preferred: Candidate | None = None) -> Candidate:
+        selected = preferred
+        if selected is None:
+            remembered = str(self.state.get('active_candidate_id') or '')
+            if remembered:
+                selected = self.candidate_by_id(remembered)
+        if selected is None:
+            matching_index = [
+                item for item in self.candidates if item.source_index == self.config_index
+            ]
+            selected = matching_index[0] if matching_index else None
+        if selected is None:
+            if not self.candidates:
+                raise RuntimeError('No proxy outbounds were found in the subscription.')
+            selected = self.candidates[0]
+
+        if not self.auto_switch_best_enabled:
+            return selected
+
+        healthy = self.sorted_healthy_candidates(exclude_configured_countries=True)
+        if not healthy:
+            return selected
+        best = healthy[0]
+        if self.same_outbound(selected, best):
+            return selected
+
+        selected_latency = self.candidate_latency_ms(selected)
+        best_latency = self.candidate_latency_ms(best)
+        if best_latency is None:
+            return selected
+
+        improvement = (
+            selected_latency - best_latency
+            if isinstance(selected_latency, int) else None
+        )
+        if selected_latency is None or (
+            isinstance(improvement, int)
+            and improvement >= self.auto_switch_min_ping_delta_ms
+        ):
+            previous_latency = f'{selected_latency} ms' if selected_latency is not None else 'unknown'
+            log(
+                f'startup selected cached best outbound {best.name} ({best_latency} ms) '
+                f'instead of {selected.name} ({previous_latency})'
+            )
+            return best
+        return selected
 
     def patch_inbounds(
         self,
@@ -2530,7 +2573,9 @@ class XrayManager:
                 selected = next((item for item in candidates if item.fingerprint == old_fingerprint), None)
             if selected is None and old_name:
                 selected = next((item for item in candidates if item.name == old_name), None)
-            if selected is None:
+            if initial:
+                selected = self.choose_initial_candidate(selected)
+            elif selected is None:
                 selected = self.choose_initial_candidate()
             active_slot_tag = self.active_slot_tag
             active_running = self.slots[active_slot_tag].running()
@@ -2966,9 +3011,23 @@ class XrayManager:
         healthy = self.sorted_healthy_candidates(exclude_configured_countries=True)
         return next((item for item in healthy if not self.same_outbound(item, active)), None)
 
+    def auto_check_wait_seconds(self, current_time: int | None = None) -> float:
+        if not self.auto_checker_enabled:
+            return 5.0
+        interval = max(10, int(self.auto_check_interval_seconds))
+        try:
+            last_check = int(self.state.get('auto_check_last_at') or 0)
+        except (TypeError, ValueError):
+            last_check = 0
+        if last_check <= 0:
+            return float(interval)
+        now_value = now_ts() if current_time is None else int(current_time)
+        elapsed = max(0, now_value - last_check)
+        return float(max(0, interval - elapsed))
+
     def auto_checker_loop(self) -> None:
         while not self.stop_event.is_set():
-            timeout = self.auto_check_interval_seconds if self.auto_checker_enabled else 5
+            timeout = self.auto_check_wait_seconds()
             woke_for_settings = self.settings_event.wait(timeout)
             if self.stop_event.is_set():
                 break

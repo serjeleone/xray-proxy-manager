@@ -533,7 +533,7 @@ function render(payload) {
       ? `Последняя ошибка: ${checker.last_error}`
       : `Последняя проверка: ${formatRelative(checker.last_check_at)}`;
     const bestMode = checker.switch_to_best
-      ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · исключения ${checker.excluded_countries || 'нет'}`
+      ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · исключения: ${checker.excluded_countries || 'нет'}`
       : '';
     $('autoCheckerMeta').textContent = `${checker.interval_seconds} с · порог ${checker.failure_threshold} · ошибок ${checker.current_failures}${bestMode}. ${result}`;
   } else {

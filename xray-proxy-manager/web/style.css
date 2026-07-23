@@ -528,7 +528,7 @@ body.modal-open { overflow: hidden; }
   .logs-window { border-radius: 18px; }
   .logs-header {
     position: relative;
-    padding: 12px 12px 12px 13px;
+    padding: 12px 15px;
     gap: 12px;
     grid-template-columns: minmax(0, 1fr);
   }
@@ -558,14 +558,14 @@ body.modal-open { overflow: hidden; }
   .logs-close-button {
     position: absolute;
     top: 12px;
-    right: 12px;
+    right: 15px;
     width: 38px;
     height: 38px;
     justify-self: auto;
   }
   .logs-close-button svg { transform: none; }
-  .logs-content { padding: 14px 54px 14px 15px; font-size: .7rem; }
-  .logs-scroll-controls { right: 14px; bottom: 54px; }
+  .logs-content { padding: 14px 55px 14px 15px; font-size: .7rem; }
+  .logs-scroll-controls { right: 15px; bottom: 54px; }
   .logs-scroll-button { width: 34px; height: 34px; }
   .logs-footer { padding: 10px 15px; flex-direction: row; }
   .button, .mini-button { padding-top: 1px; padding-bottom: 0; }
@@ -699,7 +699,7 @@ body.modal-open { overflow: hidden; }
   .outbound-actions { gap: 7px; }
   .ping { min-width: 72px; padding-left: 8px; padding-right: 8px; }
   .mini-button { padding-left: 9px; padding-right: 9px; }
-  .logs-file-controls { right: 14px; top: 142px; }
+  .logs-file-controls { right: 15px; top: 142px; }
 }
 
 
