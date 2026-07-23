@@ -154,6 +154,65 @@ function latencyRank(item) {
   return Number.POSITIVE_INFINITY;
 }
 
+function sameCandidateIdentity(left, right) {
+  if (!left || !right) return false;
+  if (left.id && right.id && left.id === right.id) return true;
+  if (left.fingerprint && right.fingerprint && left.fingerprint === right.fingerprint) return true;
+  return Boolean(
+    left.outbound_tag && right.outbound_tag
+    && String(left.protocol || '').toLowerCase() === String(right.protocol || '').toLowerCase()
+    && String(left.server || '').toLowerCase() === String(right.server || '').toLowerCase()
+    && Number(left.port || 0) === Number(right.port || 0)
+    && left.outbound_tag === right.outbound_tag
+  );
+}
+
+function slotCandidateReference(slot) {
+  return {
+    id: slot?.candidate_id || '',
+    fingerprint: slot?.candidate_fingerprint || '',
+    outbound_tag: slot?.candidate_outbound_tag || '',
+    protocol: slot?.candidate_protocol || '',
+    server: slot?.candidate_server || '',
+    port: slot?.candidate_port ?? null,
+  };
+}
+
+function candidateRuntimeState(item, payload) {
+  const blueGreen = payload?.blue_green || {};
+  const slots = blueGreen.slots || {};
+  const slotTags = new Set(Array.isArray(item.slot_tags) ? item.slot_tags : []);
+  const drainingSlots = new Set(Array.isArray(item.draining_slots) ? item.draining_slots : []);
+
+  Object.entries(slots).forEach(([tag, slot]) => {
+    if (!slot?.running || !sameCandidateIdentity(item, slotCandidateReference(slot))) return;
+    slotTags.add(tag);
+    if (slot.draining) drainingSlots.add(tag);
+  });
+
+  const activeSlot = slots[blueGreen.active_slot];
+  const active = Boolean(
+    item.active
+    || sameCandidateIdentity(item, payload?.active)
+    || (activeSlot?.running && sameCandidateIdentity(item, slotCandidateReference(activeSlot)))
+  );
+
+  if (active && blueGreen.active_slot) slotTags.add(blueGreen.active_slot);
+  return {
+    active,
+    slotTags: [...slotTags],
+    drainingSlots: [...drainingSlots],
+  };
+}
+
+function candidatePinPriority(item, payload) {
+  const runtime = candidateRuntimeState(item, payload);
+  if (runtime.active) return 0;
+  if (runtime.drainingSlots.length) return 1;
+  if (runtime.slotTags.length) return 2;
+  return 3;
+}
+
 function currentUiSettings() {
   return {
     sort: $('sortSelect').value,
@@ -202,11 +261,13 @@ function updateSaveButtons() {
   $('saveSubscription').classList.toggle('dirty', Boolean(subscriptionDirty));
 }
 
-function sortedAndFilteredCandidates(items) {
+function sortedAndFilteredCandidates(items, payload) {
   const settings = currentUiSettings();
   const protocol = settings.protocol_filter;
   const maxPing = settings.max_ping_ms;
   const filtered = items.filter((item) => {
+    // Working slots remain visible even when a user filter would otherwise hide them.
+    if (candidatePinPriority(item, payload) < 3) return true;
     if (protocol !== 'all' && item.protocol !== protocol) return false;
     if (settings.hide_unavailable && item.latency?.status === 'error') return false;
     if (maxPing > 0 && item.latency?.status === 'ok' && item.latency.latency_ms > maxPing) return false;
@@ -216,6 +277,8 @@ function sortedAndFilteredCandidates(items) {
   const [field, direction] = settings.sort.split('-');
   const factor = direction === 'desc' ? -1 : 1;
   filtered.sort((a, b) => {
+    const pinDifference = candidatePinPriority(a, payload) - candidatePinPriority(b, payload);
+    if (pinDifference !== 0) return pinDifference;
     if (field === 'ping') {
       const av = latencyRank(a); const bv = latencyRank(b);
       const aMissing = !Number.isFinite(av); const bMissing = !Number.isFinite(bv);
@@ -252,7 +315,7 @@ function renderProtocols(protocols) {
 
 function renderCandidates(payload) {
   const allItems = payload.candidates || [];
-  const items = sortedAndFilteredCandidates(allItems);
+  const items = sortedAndFilteredCandidates(allItems, payload);
   const availability = payload.availability || {};
   const total = availability.total || allItems.length;
   const untested = availability.untested || 0;
@@ -270,20 +333,21 @@ function renderCandidates(payload) {
     payload.jobs?.latency?.running || payload.jobs?.refresh?.running || payload.jobs?.switch?.running
   );
   $('outboundList').innerHTML = items.map((item) => {
-    const slotTags = Array.isArray(item.slot_tags) ? item.slot_tags : [];
-    const drainingSlots = Array.isArray(item.draining_slots) ? item.draining_slots : [];
+    const runtime = candidateRuntimeState(item, payload);
+    const slotTags = runtime.slotTags;
+    const drainingSlots = runtime.drainingSlots;
     const slotBadges = slotTags.map((tag) => (
       `<span class="slot-badge" title="Слот ${escapeHtml(tag)}">${tag === 'xray-a' ? 'A' : 'B'}</span>`
     )).join('');
     const drainingSlot = drainingSlots[0] || '';
     return `
-    <article class="outbound-card ${item.active ? 'active' : ''} ${item.latency?.status === 'error' ? 'unavailable' : ''}">
+    <article class="outbound-card ${runtime.active ? 'active' : ''} ${drainingSlot ? 'draining' : ''} ${item.latency?.status === 'error' ? 'unavailable' : ''}">
       <div class="outbound-main">
         <div class="outbound-title-row">
           ${slotBadges}
           <span class="outbound-title" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
           <span class="protocol-chip">${escapeHtml(item.protocol)}</span>
-          ${item.active ? '<span class="active-chip">АКТИВЕН</span>' : ''}
+          ${runtime.active ? '<span class="active-chip">АКТИВЕН</span>' : ''}
           ${drainingSlot ? '<span class="draining-chip">ЗАВЕРШАЕТ СОЕДИНЕНИЯ</span>' : ''}
         </div>
         <div class="outbound-meta" title="${escapeHtml(protocolMeta(item))}">${escapeHtml(protocolMeta(item))}</div>
@@ -292,7 +356,7 @@ function renderCandidates(payload) {
         ${drainingSlot ? `<button class="mini-button danger" data-stop-slot="${escapeHtml(drainingSlot)}">Стоп</button>` : ''}
         ${pingMarkup(item)}
         <button class="mini-button" data-test="${escapeHtml(item.id)}" ${operationRunning ? 'disabled' : ''}>Тест</button>
-        <button class="mini-button select" data-select="${escapeHtml(item.id)}" ${item.active || operationRunning ? 'disabled' : ''}>Выбрать</button>
+        <button class="mini-button select" data-select="${escapeHtml(item.id)}" ${runtime.active || operationRunning ? 'disabled' : ''}>Выбрать</button>
       </div>
     </article>`;
   }).join('');
@@ -347,18 +411,18 @@ function renderTraffic(payload) {
     return;
   }
 
-  const ruleName = router.rule_section || 'настроенное правило';
+  const ruleName = router.rule_name || router.rule_section || 'настроенное правило';
   button.disabled = Boolean(router.busy);
   if (router.rule_enabled) {
     button.classList.add('enabled');
     button.title = `Отключить правило ${ruleName}`;
-    hint.textContent = `Правило ${ruleName} включено · нажмите, чтобы приостановить`;
+    hint.textContent = `Правило ${ruleName} включено · нажмите кнопку выше, чтобы приостановить`;
   } else {
     button.classList.add('paused');
     button.title = `Включить правило ${ruleName}`;
     $('statusDot').className = 'status-dot warn';
     $('xrayState').textContent = 'Внешнее правило отключено';
-    hint.textContent = `Xray продолжает работать, правило ${ruleName} выключено`;
+    hint.textContent = `Правило ${ruleName} приостановлено · нажмите кнопку выше, чтобы возобновить`;
     hint.classList.add('warn');
   }
 }
@@ -611,6 +675,23 @@ async function fetchLogs(forceScroll = false) {
   }
 }
 
+function positionLogFileControls() {
+  if (!state.logsOpen) return;
+  const windowElement = document.querySelector('.logs-window');
+  const controls = $('logsFileControls');
+  const wrapButton = $('logsWrapToggle');
+  const closeButton = $('closeLogsButton');
+  if (!windowElement || !controls || !wrapButton || !closeButton) return;
+
+  const windowRect = windowElement.getBoundingClientRect();
+  const wrapRect = wrapButton.getBoundingClientRect();
+  const closeRect = closeButton.getBoundingClientRect();
+  const measuredGap = wrapRect.top - closeRect.bottom;
+  const gap = Math.max(12, Math.min(32, measuredGap > 0 ? measuredGap : 16));
+  controls.style.top = `${Math.round(wrapRect.bottom - windowRect.top + gap)}px`;
+  controls.style.right = `${Math.max(12, Math.round(windowRect.right - wrapRect.right))}px`;
+}
+
 function openLogs(event) {
   event?.preventDefault();
   event?.stopPropagation();
@@ -619,6 +700,7 @@ function openLogs(event) {
   state.logsOpen = true;
   $('logsModal').classList.remove('hidden');
   document.body.classList.add('modal-open');
+  window.requestAnimationFrame(positionLogFileControls);
   fetchLogs(true);
   window.clearInterval(state.logsTimer);
   state.logsTimer = window.setInterval(() => fetchLogs(false), 2000);
@@ -759,21 +841,11 @@ async function copyLogs() {
 
 function downloadLogs() {
   toast('Выгрузка в файл...');
-  const now = new Date();
-  const stamp = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-  ].join('-') + '_' + [
-    String(now.getHours()).padStart(2, '0'),
-    String(now.getMinutes()).padStart(2, '0'),
-    String(now.getSeconds()).padStart(2, '0'),
-  ].join('-');
   const blob = new Blob([rawLogsText()], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `xray-proxy-manager-logs-${stamp}.txt`;
+  anchor.download = '';
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -929,6 +1001,7 @@ $('applyRestartButton').addEventListener('click', () => {
 });
 $('saveOnlyButton').addEventListener('click', hideRestartModal);
 $('cancelRestartButton').addEventListener('click', hideRestartModal);
+window.addEventListener('resize', () => window.requestAnimationFrame(positionLogFileControls));
 
 fetchStatus();
 setInterval(fetchStatus, 3000);

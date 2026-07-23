@@ -328,6 +328,24 @@ input[type="number"]::-webkit-outer-spin-button {
   background:
     linear-gradient(105deg, rgba(28,126,63,.23) 0%, rgba(20,63,36,.12) 34%, rgba(20,22,21,.98) 100%);
 }
+.outbound-card.draining {
+  border-color: rgba(232,185,48,.78);
+  background:
+    linear-gradient(105deg, rgba(160,116,18,.24) 0%, rgba(91,69,19,.13) 36%, rgba(20,20,17,.98) 100%);
+  box-shadow: 0 0 0 1px rgba(232,185,48,.13), inset 0 1px 0 rgba(255,255,255,.04);
+}
+.outbound-card.draining::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255,239,174,.045), transparent 44%);
+}
+.outbound-card.draining:hover {
+  background:
+    linear-gradient(105deg, rgba(177,128,19,.28) 0%, rgba(103,77,20,.15) 36%, rgba(23,23,19,.98) 100%);
+}
 .outbound-card.unavailable { opacity: .72; }
 .outbound-main { min-width: 0; }
 .outbound-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -555,7 +573,7 @@ body.modal-open { overflow: hidden; }
   .hero-actions .button { min-height: 40px; padding: 1px 13px 0; font-size: .79rem; }
 }
 
-/* v0.6.0: active slot header, external rule control and drain actions. */
+/* Active slot header, external rule control and drain actions. */
 .hero-card {
   height: auto;
   min-height: 278px;
@@ -652,8 +670,7 @@ body.modal-open { overflow: hidden; }
 .logs-file-controls {
   position: absolute;
   right: 26px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 150px;
   z-index: 2;
   display: grid;
   gap: 9px;
@@ -682,11 +699,11 @@ body.modal-open { overflow: hidden; }
   .outbound-actions { gap: 7px; }
   .ping { min-width: 72px; padding-left: 8px; padding-right: 8px; }
   .mini-button { padding-left: 9px; padding-right: 9px; }
-  .logs-file-controls { right: 14px; top: 50%; }
+  .logs-file-controls { right: 14px; top: 142px; }
 }
 
 
-/* v0.6.0 responsive refinements. */
+/* Responsive refinements. */
 .hero-primary-row,
 .hero-primary-row h2,
 .hero-details,

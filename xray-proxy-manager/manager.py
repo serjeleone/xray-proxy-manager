@@ -52,7 +52,7 @@ UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.6.0'
+ADDON_VERSION = '0.6.1'
 
 DIRECT_PROTOCOLS = {'freedom', 'blackhole', 'dns', 'loopback'}
 DIRECT_TAGS = {
@@ -654,6 +654,7 @@ class XrayManager:
             'configured': self.router_control_enabled,
             'available': False,
             'rule_enabled': None,
+            'rule_name': self.router_firewall_rule,
             'rule_section': '',
             'busy': False,
             'last_checked_at': None,
@@ -1254,6 +1255,7 @@ class XrayManager:
                     'configured': False,
                     'available': False,
                     'rule_enabled': None,
+                    'rule_name': self.router_firewall_rule,
                     'error': 'Управление правилом отключено',
                     'last_checked_at': now_ts(),
                 })
@@ -1270,6 +1272,7 @@ class XrayManager:
                     'configured': True,
                     'available': True,
                     'rule_enabled': enabled,
+                    'rule_name': self.router_firewall_rule,
                     'rule_section': section,
                     'error': '',
                     'last_checked_at': now_ts(),
@@ -1280,6 +1283,7 @@ class XrayManager:
                     'configured': True,
                     'available': False,
                     'rule_enabled': None,
+                    'rule_name': self.router_firewall_rule,
                     'error': str(exc),
                     'last_checked_at': now_ts(),
                 })
@@ -1301,6 +1305,7 @@ class XrayManager:
                 self.router_state.update({
                     'available': True,
                     'rule_enabled': actual_enabled,
+                    'rule_name': self.router_firewall_rule,
                     'rule_section': match.group(2).strip(),
                     'error': '',
                     'last_checked_at': now_ts(),
@@ -1310,6 +1315,7 @@ class XrayManager:
                 self.router_state.update({
                     'available': False,
                     'rule_enabled': None,
+                    'rule_name': self.router_firewall_rule,
                     'error': str(exc),
                     'last_checked_at': now_ts(),
                 })
@@ -3054,6 +3060,48 @@ class XrayManager:
                 if is_active and self.restart_on_runtime_error:
                     os._exit(1)
 
+    def rebind_slot_candidates(self) -> bool:
+        """Bind running slots to objects from the current subscription list.
+
+        Candidate identifiers can change after a subscription refresh even when
+        the actual outbound is unchanged. Keeping stale Candidate objects in a
+        slot makes the first UI status response unable to mark the active or
+        draining card until another operation rewrites the slot state.
+        """
+        changed = False
+        for tag, slot in self.slots.items():
+            if not slot.running():
+                continue
+            match: Candidate | None = None
+            if tag == self.active_slot_tag and self.active_candidate_id:
+                match = self.candidate_by_id(self.active_candidate_id)
+            if match is None and slot.candidate is not None:
+                match = next(
+                    (item for item in self.candidates if self.same_outbound(item, slot.candidate)),
+                    None,
+                )
+            if match is None and slot.candidate_id:
+                match = self.candidate_by_id(slot.candidate_id)
+            if match is None and slot.candidate_name:
+                match = next(
+                    (item for item in self.candidates if item.name == slot.candidate_name),
+                    None,
+                )
+            if match is None and slot.observed_outbound_tag:
+                match = self.candidate_by_tag(slot.observed_outbound_tag)
+            if match is None:
+                continue
+            if slot.candidate_id != match.id or slot.candidate is not match:
+                changed = True
+            slot.candidate = match
+            slot.candidate_id = match.id
+            slot.candidate_name = match.name
+            if tag == self.active_slot_tag and self.active_candidate_id != match.id:
+                self.active_candidate_id = match.id
+                self.state['active_candidate_id'] = match.id
+                changed = True
+        return changed
+
     def effective_active_candidate(self) -> tuple[Candidate | None, Candidate | None, bool]:
         active_slot = self.slots[self.active_slot_tag]
         selected = self.candidate_by_id(self.active_candidate_id) or active_slot.candidate
@@ -3072,6 +3120,8 @@ class XrayManager:
 
     def status_payload(self) -> dict[str, Any]:
         with self.lock:
+            if self.rebind_slot_candidates():
+                self.save_state()
             active_slot = self.slots[self.active_slot_tag]
             process_running = active_slot.running()
             active, selected, mismatch = self.effective_active_candidate()
@@ -3110,6 +3160,11 @@ class XrayManager:
                     'draining': slot.draining,
                     'candidate_id': slot.candidate_id,
                     'candidate_name': slot.candidate_name,
+                    'candidate_fingerprint': slot.candidate.fingerprint if slot.candidate else '',
+                    'candidate_outbound_tag': slot.candidate.outbound_tag if slot.candidate else '',
+                    'candidate_protocol': slot.candidate.protocol if slot.candidate else '',
+                    'candidate_server': slot.candidate.server if slot.candidate else '',
+                    'candidate_port': slot.candidate.port if slot.candidate else None,
                     'socks_tcp': slot.socks_tcp,
                     'socks_udp': slot.socks_udp,
                     'started_at': slot.started_at,

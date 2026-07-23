@@ -127,12 +127,63 @@ class ManagerLogicTests(unittest.TestCase):
         instance.candidate_by_id = lambda candidate_id: next(
             (item for item in instance.candidates if item.id == candidate_id), None
         )
+        instance.save_state = lambda: None
         instance.effective_active_candidate = lambda: (active, active, False)
         payload = instance.status_payload()
         item = next(item for item in payload["candidates"] if item["id"] == refreshed.id)
         self.assertEqual(item["slot_tags"], ["xray-a"])
         self.assertEqual(item["draining_slots"], ["xray-a"])
         self.assertIs(item["draining"], True)
+
+    def test_status_rebinds_active_slot_before_first_ui_render(self) -> None:
+        stale = candidate("old-active-id", "198.51.100.40", fingerprint="stable-active")
+        refreshed = candidate("new-active-id", "198.51.100.40", fingerprint="stable-active")
+        other = candidate("other", "198.51.100.41")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.candidates = [other, refreshed]
+        instance.latencies = {}
+        instance.active_slot_tag = "xray-a"
+        instance.active_candidate_id = stale.id
+        instance.started_at = int(time.time())
+        instance.state = {"jobs": {}, "auto_check_failures": 0, "active_candidate_id": stale.id}
+        instance.next_update_at = None
+        instance.subscription_url = ""
+        instance.update_interval_hours = 1
+        instance.auto_checker_enabled = True
+        instance.auto_switch_best_enabled = True
+        instance.auto_switch_excluded_countries = "RU"
+        instance.auto_switch_min_ping_delta_ms = 100
+        instance.auto_check_interval_seconds = 600
+        instance.auto_check_failures = 3
+        instance.ui_sort = "ping-asc"
+        instance.ui_protocol_filter = "all"
+        instance.ui_max_ping_ms = 1000
+        instance.ui_hide_unavailable = False
+        instance.selector_state = {}
+        instance.router_state = {}
+        instance.selector_tag = "xray-active"
+        instance.drain_quiet_seconds = 30
+        instance.drain_timeout_minutes = 0
+        instance.latency_test_url = "https://example.com/"
+        instance._xray_version_cache = "Xray test"
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess(),
+                candidate_id=stale.id, candidate_name=stale.name, candidate=stale,
+            ),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
+        }
+        instance.save_state = lambda: None
+
+        payload = instance.status_payload()
+
+        active_item = next(item for item in payload["candidates"] if item["id"] == refreshed.id)
+        self.assertIs(active_item["active"], True)
+        self.assertEqual(active_item["slot_tags"], ["xray-a"])
+        self.assertEqual(instance.active_candidate_id, refreshed.id)
+        self.assertEqual(instance.state["active_candidate_id"], refreshed.id)
+        self.assertIs(instance.slots["xray-a"].candidate, refreshed)
 
     def test_manual_selection_reuses_draining_standby(self) -> None:
         active = candidate("active", "198.51.100.1")
