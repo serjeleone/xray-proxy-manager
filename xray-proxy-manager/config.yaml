@@ -1,5 +1,5 @@
 name: Xray Proxy Manager
-version: "0.6.4"
+version: "0.6.5"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
 description: "Управление Xray через два независимых SOCKS5-слота, проверку outbound и безопасное переключение"
@@ -21,17 +21,12 @@ hassio_role: default
 watchdog: "http://[HOST]:[PORT:8099]/api/health"
 backup: hot
 map:
-  - addon_config:rw
+  - app_config:rw
 ports:
   10808/tcp: 10808
   10808/udp: 10808
   10809/tcp: 10809
   10809/udp: 10809
-ports_description:
-  10808/tcp: "SOCKS5 · слот xray-a"
-  10808/udp: "SOCKS5 UDP · слот xray-a"
-  10809/tcp: "SOCKS5 · слот xray-b"
-  10809/udp: "SOCKS5 UDP · слот xray-b"
 options:
   subscription_url: ""
   config_index: 0

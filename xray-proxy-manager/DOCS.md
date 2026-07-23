@@ -240,5 +240,5 @@ auto_switch_excluded_countries: "RU, Лучший сервер"
 `.github/workflows/build.yml` собирает `amd64` и `aarch64` и публикует multi-arch образ:
 
 ```text
-ghcr.io/serjeleone/xray-proxy-manager:v0.6.4
+ghcr.io/serjeleone/xray-proxy-manager:v0.6.5
 ```

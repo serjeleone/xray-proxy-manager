@@ -53,7 +53,7 @@ UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.6.4'
+ADDON_VERSION = '0.6.5'
 
 DIRECT_PROTOCOLS = {'freedom', 'blackhole', 'dns', 'loopback'}
 DIRECT_TAGS = {

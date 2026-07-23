@@ -152,3 +152,8 @@ configuration:
   ui_hide_unavailable:
     name: Скрывать недоступные
     description: Не показывать outbound с неуспешной проверкой.
+network:
+  10808/tcp: SOCKS5 · слот xray-a
+  10808/udp: SOCKS5 UDP · слот xray-a
+  10809/tcp: SOCKS5 · слот xray-b
+  10809/udp: SOCKS5 UDP · слот xray-b

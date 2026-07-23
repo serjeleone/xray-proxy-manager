@@ -1,7 +1,6 @@
 # Xray Proxy Manager
 
-[![Validate](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/validate.yml/badge.svg)](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/validate.yml)
-[![Build](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/build.yml/badge.svg)](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/build.yml)
+[![Release](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/build.yml/badge.svg?event=release)](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/build.yml?query=event%3Arelease)
 [![Добавить репозиторий в Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fserjeleone%2Fxray-proxy-manager)
 
 Xray Proxy Manager — приложение Home Assistant для загрузки Xray JSON-subscription, проверки outbound и переключения между двумя независимыми SOCKS5-слотами.
@@ -41,6 +40,8 @@ Xray Proxy Manager — приложение Home Assistant для загрузк
 | `10809/udp` | UDP relay SOCKS5-слота `xray-b` |
 
 `socks_tcp_a` и `socks_tcp_b` задают номера SOCKS5-inbound. Флаги `socks_udp_a` и `socks_udp_b` независимо включают UDP relay в соответствующем слоте. TCP и UDP одного слота используют один номер порта.
+
+Подписи портов в окне Configuration локализуются через `translations/en.yaml` и `translations/ru.yaml` и соответствуют языку интерфейса Home Assistant.
 
 ## Установка
 
@@ -92,5 +93,5 @@ Selector должен содержать элементы с точными им
 
 ## Версия
 
-Текущая версия приложения: `0.6.4`.
+Текущая версия приложения: `0.6.5`.
 
