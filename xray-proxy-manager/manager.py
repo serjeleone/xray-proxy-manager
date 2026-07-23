@@ -52,7 +52,7 @@ UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.6.1'
+ADDON_VERSION = '0.6.2'
 
 DIRECT_PROTOCOLS = {'freedom', 'blackhole', 'dns', 'loopback'}
 DIRECT_TAGS = {
@@ -133,18 +133,47 @@ COUNTRY_NAME_ALIASES = {
 }
 
 
-def normalize_country_codes(value: Any) -> str:
+def normalize_auto_switch_exclusions(value: Any) -> str:
     result: list[str] = []
     seen: set[str] = set()
-    for token in re.split(r'[\s,;]+', str(value or '').upper().strip()):
+    for raw_token in re.split(r'[,;\n]+', str(value or '').strip()):
+        token = re.sub(r'\s+', ' ', raw_token).strip()
         if not token:
             continue
-        if token not in ISO_COUNTRY_CODES:
-            raise ValueError(f'Неизвестный код страны: {token}')
-        if token not in seen:
-            seen.add(token)
-            result.append(token)
-    return ','.join(result)
+        if re.fullmatch(r'[A-Za-z]{2}', token):
+            normalized = token.upper()
+            if normalized not in ISO_COUNTRY_CODES:
+                raise ValueError(f'Неизвестный код страны: {normalized}')
+            dedupe_key = f'country:{normalized}'
+        else:
+            if len(token) < 3:
+                raise ValueError('Текстовый фрагмент исключения должен содержать не менее 3 символов')
+            normalized = token
+            dedupe_key = f'text:{normalized.casefold()}'
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        result.append(normalized)
+    return ', '.join(result)
+
+
+def normalize_country_codes(value: Any) -> str:
+    # Compatibility alias for existing callers and persisted configurations.
+    return normalize_auto_switch_exclusions(value)
+
+
+def parse_auto_switch_exclusions(value: Any) -> tuple[set[str], list[str]]:
+    normalized = normalize_auto_switch_exclusions(value)
+    country_codes: set[str] = set()
+    fragments: list[str] = []
+    for token in (item.strip() for item in normalized.split(',')):
+        if not token:
+            continue
+        if re.fullmatch(r'[A-Z]{2}', token) and token in ISO_COUNTRY_CODES:
+            country_codes.add(token)
+        else:
+            fragments.append(token.casefold())
+    return country_codes, fragments
 
 
 def infer_country_code(*values: Any) -> str:
@@ -669,7 +698,7 @@ class XrayManager:
         self.subscription_url = str(source.get('subscription_url') or '').strip()
         self.auto_checker_enabled = to_bool(source.get('auto_checker_enabled', True))
         self.auto_switch_best_enabled = to_bool(source.get('auto_switch_best_enabled', True))
-        self.auto_switch_excluded_countries = normalize_country_codes(
+        self.auto_switch_excluded_countries = normalize_auto_switch_exclusions(
             source.get('auto_switch_excluded_countries', 'RU')
         )
         self.auto_switch_min_ping_delta_ms = bounded_int(
@@ -707,7 +736,7 @@ class XrayManager:
             elif key in {'auto_checker_enabled', 'auto_switch_best_enabled', 'ui_hide_unavailable'}:
                 normalized[key] = to_bool(value)
             elif key == 'auto_switch_excluded_countries':
-                normalized[key] = normalize_country_codes(value)
+                normalized[key] = normalize_auto_switch_exclusions(value)
             elif key == 'auto_switch_min_ping_delta_ms':
                 normalized[key] = bounded_int(value, 0, 10000, key)
             elif key == 'auto_check_interval_seconds':
@@ -2751,14 +2780,13 @@ class XrayManager:
                     self.save_state()
 
             if switch_to_best and fresh_results and not self.stop_event.is_set():
-                excluded_countries = self.excluded_country_codes()
                 healthy: list[tuple[int, str, Candidate]] = []
                 for candidate in candidates:
                     result = fresh_results.get(candidate.id) or {}
                     latency_ms = result.get('latency_ms')
                     if result.get('status') != 'ok' or not isinstance(latency_ms, int):
                         continue
-                    if candidate.country_code and candidate.country_code in excluded_countries:
+                    if self.candidate_is_excluded(candidate):
                         continue
                     healthy.append((latency_ms, candidate.name.casefold(), candidate))
                 healthy.sort(key=lambda item: (item[0], item[1]))
@@ -2816,7 +2844,7 @@ class XrayManager:
                     excluded_text = self.auto_switch_excluded_countries or 'нет'
                     final_message = (
                         'Проверка завершена · подходящие outbound не найдены '
-                        f'(исключённые страны: {excluded_text})'
+                        f'(исключения автоматики: {excluded_text})'
                     )
         except Exception as exc:
             final_message = f'Ошибка проверки: {exc}'
@@ -2869,20 +2897,40 @@ class XrayManager:
         )
 
     def excluded_country_codes(self) -> set[str]:
-        return {
-            code for code in self.auto_switch_excluded_countries.split(',') if code
-        }
+        country_codes, _fragments = parse_auto_switch_exclusions(
+            self.auto_switch_excluded_countries
+        )
+        return country_codes
+
+    def excluded_outbound_fragments(self) -> list[str]:
+        _country_codes, fragments = parse_auto_switch_exclusions(
+            self.auto_switch_excluded_countries
+        )
+        return fragments
+
+    def candidate_is_excluded(self, candidate: Candidate) -> bool:
+        country_codes, fragments = parse_auto_switch_exclusions(
+            self.auto_switch_excluded_countries
+        )
+        if candidate.country_code and candidate.country_code in country_codes:
+            return True
+        haystack = ' '.join((
+            candidate.name,
+            candidate.outbound_tag,
+            candidate.protocol,
+            candidate.server,
+            candidate.id,
+        )).casefold()
+        return any(fragment in haystack for fragment in fragments)
 
     def candidate_country_is_excluded(self, candidate: Candidate) -> bool:
-        return bool(
-            candidate.country_code
-            and candidate.country_code in self.excluded_country_codes()
-        )
+        # Compatibility alias: exclusions now also include text fragments.
+        return self.candidate_is_excluded(candidate)
 
     def sorted_healthy_candidates(self, exclude_configured_countries: bool = False) -> list[Candidate]:
         healthy: list[tuple[int, Candidate]] = []
         for candidate in self.candidates:
-            if exclude_configured_countries and self.candidate_country_is_excluded(candidate):
+            if exclude_configured_countries and self.candidate_is_excluded(candidate):
                 continue
             data = self.latencies.get(candidate.id) or {}
             if data.get('status') == 'ok' and isinstance(data.get('latency_ms'), int):
@@ -2899,14 +2947,14 @@ class XrayManager:
             return alternatives[0]
 
         log(
-            'no previous healthy latency result is available outside excluded countries; '
-            f'running a fresh outbound test (excluded countries: {excluded_text})',
+            'no previous healthy latency result is available outside configured exclusions; '
+            f'running a fresh outbound test (configured exclusions: {excluded_text})',
             error=True,
         )
         for candidate in list(self.candidates):
             if self.same_outbound(candidate, active):
                 continue
-            if self.candidate_country_is_excluded(candidate):
+            if self.candidate_is_excluded(candidate):
                 log(
                     f'auto-check skipped excluded failover outbound: {candidate.name} '
                     f'[{candidate.country_code}]',
@@ -2972,8 +3020,8 @@ class XrayManager:
                 if candidate is None:
                     excluded_text = self.auto_switch_excluded_countries or 'нет'
                     log(
-                        'auto-check could not find a healthy failover outbound outside '
-                        f'excluded countries: {excluded_text}',
+                        'auto-check could not find a healthy failover outbound outside configured exclusions: '
+                        f'{excluded_text}',
                         error=True,
                     )
                     continue

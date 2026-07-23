@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=6">
+  <link rel="stylesheet" href="style.css?ui=7">
 </head>
 <body>
   <main class="shell">
@@ -113,8 +113,8 @@
             <input id="autoCheckFailures" type="number" min="1" max="100" step="1" inputmode="numeric">
           </label>
           <label>
-            <span>Игнорировать страну</span>
-            <input id="autoSwitchExcludedCountries" type="text" maxlength="64" inputmode="text" autocomplete="off" placeholder="RU">
+            <span>Исключить из автоматики</span>
+            <input id="autoSwitchExcludedCountries" type="text" maxlength="512" inputmode="text" autocomplete="off" placeholder="RU, Лучший сервер">
           </label>
           <label>
             <span>Разница по пингу, мс</span>
@@ -248,6 +248,6 @@
     </div>
   </div>
 
-  <script src="app.js?ui=6"></script>
+  <script src="app.js?ui=7"></script>
 </body>
 </html>

@@ -222,14 +222,21 @@ function currentUiSettings() {
   };
 }
 
-function normalizeCountryCodes(value) {
+function normalizeAutoSwitchExclusions(value) {
   const seen = new Set();
-  return String(value || '')
-    .toUpperCase()
-    .split(/[\s,;]+/)
-    .map((item) => item.trim())
-    .filter((item) => /^[A-Z]{2}$/.test(item) && !seen.has(item) && seen.add(item))
-    .join(',');
+  const result = [];
+  String(value || '')
+    .split(/[,;\n]+/)
+    .map((item) => item.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .forEach((item) => {
+      const normalized = /^[A-Za-z]{2}$/.test(item) ? item.toUpperCase() : item;
+      const key = normalized.toLocaleLowerCase('ru-RU');
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push(normalized);
+    });
+  return result.join(', ');
 }
 
 function autoCheckerFormValues() {
@@ -238,7 +245,7 @@ function autoCheckerFormValues() {
     auto_switch_best_enabled: $('autoSwitchBestEnabled').checked,
     auto_check_interval_seconds: Number.parseInt($('autoCheckInterval').value, 10),
     auto_check_failures: Number.parseInt($('autoCheckFailures').value, 10),
-    auto_switch_excluded_countries: normalizeCountryCodes($('autoSwitchExcludedCountries').value),
+    auto_switch_excluded_countries: normalizeAutoSwitchExclusions($('autoSwitchExcludedCountries').value),
     auto_switch_min_ping_delta_ms: Number.parseInt($('autoSwitchMinPingDelta').value, 10),
   };
 }
@@ -416,13 +423,13 @@ function renderTraffic(payload) {
   if (router.rule_enabled) {
     button.classList.add('enabled');
     button.title = `Отключить правило ${ruleName}`;
-    hint.textContent = `Правило ${ruleName} включено · нажмите кнопку выше, чтобы приостановить`;
+    hint.textContent = `Правило ${ruleName} включено · нажмите кнопку выше, чтобы приостановить.`;
   } else {
     button.classList.add('paused');
     button.title = `Включить правило ${ruleName}`;
     $('statusDot').className = 'status-dot warn';
     $('xrayState').textContent = 'Внешнее правило отключено';
-    hint.textContent = `Правило ${ruleName} приостановлено · нажмите кнопку выше, чтобы возобновить`;
+    hint.textContent = `Правило ${ruleName} приостановлено · нажмите кнопку выше, чтобы возобновить.`;
     hint.classList.add('warn');
   }
 }
@@ -448,7 +455,7 @@ function renderRuntimeStatus(payload) {
     hint.classList.add('warn');
     return;
   }
-  hint.textContent = `Selector ${payload.blue_green?.selector_tag || 'xray-active'}: ${selector.current || '—'}`;
+  hint.textContent = `Текущий активный селектор: ${selector.current || '—'}`;
   if (!selector.connections_supported) {
     $('statusDot').className = 'status-dot warn';
     hint.textContent += ` · ${selector.error || 'учёт соединений недоступен'}; автоматическое завершение старого слота приостановлено`;
@@ -499,7 +506,7 @@ function render(payload) {
   const drainingSlot = Object.values(blueGreen.slots || {}).find((slot) => slot.draining);
   if (drainingSlot) {
     if (drainingSlot.drain_connections > 0) {
-      activeMeta += ` / ${drainingSlot.tag} завершает старые соединения в количестве: ${drainingSlot.drain_connections}`;
+      activeMeta += ` / ${drainingSlot.tag} завершает старые соединения в количестве: ${drainingSlot.drain_connections} шт.`;
     } else {
       const drainState = drainingSlot.drain_zero_since ? 'защитная пауза' : 'проверка активности';
       activeMeta += ` / ${drainingSlot.tag} завершает старые соединения: ${drainState}`;
@@ -526,7 +533,7 @@ function render(payload) {
       ? `Последняя ошибка: ${checker.last_error}`
       : `Последняя проверка: ${formatRelative(checker.last_check_at)}`;
     const bestMode = checker.switch_to_best
-      ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · исключение ${checker.excluded_countries || 'нет'}`
+      ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · исключения ${checker.excluded_countries || 'нет'}`
       : '';
     $('autoCheckerMeta').textContent = `${checker.interval_seconds} с · порог ${checker.failure_threshold} · ошибок ${checker.current_failures}${bestMode}. ${result}`;
   } else {
@@ -681,15 +688,17 @@ function positionLogFileControls() {
   const controls = $('logsFileControls');
   const wrapButton = $('logsWrapToggle');
   const closeButton = $('closeLogsButton');
-  if (!windowElement || !controls || !wrapButton || !closeButton) return;
+  const scrollControls = document.querySelector('.logs-scroll-controls');
+  if (!windowElement || !controls || !wrapButton || !closeButton || !scrollControls) return;
 
   const windowRect = windowElement.getBoundingClientRect();
   const wrapRect = wrapButton.getBoundingClientRect();
   const closeRect = closeButton.getBoundingClientRect();
+  const scrollRect = scrollControls.getBoundingClientRect();
   const measuredGap = wrapRect.top - closeRect.bottom;
   const gap = Math.max(12, Math.min(32, measuredGap > 0 ? measuredGap : 16));
   controls.style.top = `${Math.round(wrapRect.bottom - windowRect.top + gap)}px`;
-  controls.style.right = `${Math.max(12, Math.round(windowRect.right - wrapRect.right))}px`;
+  controls.style.right = `${Math.max(12, Math.round(windowRect.right - scrollRect.right))}px`;
 }
 
 function openLogs(event) {

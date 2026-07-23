@@ -185,6 +185,30 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(instance.state["active_candidate_id"], refreshed.id)
         self.assertIs(instance.slots["xray-a"].candidate, refreshed)
 
+    def test_auto_switch_exclusions_support_country_codes_and_text_fragments(self) -> None:
+        normalized = manager.normalize_auto_switch_exclusions(
+            "ru, Лучший  сервер, ЛУЧШИЙ СЕРВЕР"
+        )
+        self.assertEqual(normalized, "RU, Лучший сервер")
+
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.auto_switch_excluded_countries = normalized
+
+        country_candidate = candidate("country", "198.51.100.50")
+        country_candidate = manager.Candidate(
+            **{**country_candidate.__dict__, "country_code": "RU", "name": "Обычный сервер"}
+        )
+        phrase_candidate = manager.Candidate(
+            **{**candidate("phrase", "198.51.100.51").__dict__, "name": "Лучший сервер ⚡⚡"}
+        )
+        short_code_substring = manager.Candidate(
+            **{**candidate("substring", "198.51.100.52").__dict__, "name": "True route", "country_code": "US"}
+        )
+
+        self.assertTrue(instance.candidate_is_excluded(country_candidate))
+        self.assertTrue(instance.candidate_is_excluded(phrase_candidate))
+        self.assertFalse(instance.candidate_is_excluded(short_code_substring))
+
     def test_manual_selection_reuses_draining_standby(self) -> None:
         active = candidate("active", "198.51.100.1")
         old = candidate("old", "198.51.100.2")
