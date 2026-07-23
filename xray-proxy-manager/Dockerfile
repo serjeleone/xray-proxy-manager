@@ -4,7 +4,8 @@ ARG BUILD_ARCH
 ARG TARGETARCH
 ARG TARGETVARIANT
 ARG XRAY_VERSION=v26.7.11
-ARG BUILD_VERSION="0.5.0"
+ARG BUILD_VERSION="0.6.0"
+ARG RELEASE_TAG="v0.6.0"
 
 LABEL io.hass.version="${BUILD_VERSION}" \
       io.hass.type="app" \
@@ -17,6 +18,7 @@ LABEL io.hass.version="${BUILD_VERSION}" \
       org.opencontainers.image.source="https://github.com/serjeleone/xray-proxy-manager" \
       org.opencontainers.image.url="https://github.com/serjeleone/xray-proxy-manager" \
       org.opencontainers.image.documentation="https://github.com/serjeleone/xray-proxy-manager/blob/main/xray-proxy-manager/DOCS.md" \
+      org.opencontainers.image.version="${RELEASE_TAG}" \
       org.opencontainers.image.authors="serjeleone"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -25,7 +27,9 @@ RUN apk add --no-cache \
       bash \
       ca-certificates \
       curl \
+      openssh-client \
       python3 \
+      sshpass \
       tzdata \
       unzip \
     && set -eux; \
@@ -39,7 +43,7 @@ RUN apk add --no-cache \
       "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip"; \
     unzip /tmp/xray.zip -d /tmp/xray; \
     install -m 0755 /tmp/xray/xray /usr/local/bin/xray; \
-    mkdir -p /usr/local/share/xray /config/xray-proxy-manager; \
+    mkdir -p /usr/local/share/xray /config; \
     if [ -f /tmp/xray/geoip.dat ]; then install -m 0644 /tmp/xray/geoip.dat /usr/local/share/xray/geoip.dat; fi; \
     if [ -f /tmp/xray/geosite.dat ]; then install -m 0644 /tmp/xray/geosite.dat /usr/local/share/xray/geosite.dat; fi; \
     rm -rf /tmp/xray /tmp/xray.zip

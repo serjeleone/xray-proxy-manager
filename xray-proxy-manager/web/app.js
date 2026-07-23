@@ -269,23 +269,33 @@ function renderCandidates(payload) {
   const operationRunning = Boolean(
     payload.jobs?.latency?.running || payload.jobs?.refresh?.running || payload.jobs?.switch?.running
   );
-  $('outboundList').innerHTML = items.map((item) => `
+  $('outboundList').innerHTML = items.map((item) => {
+    const slotTags = Array.isArray(item.slot_tags) ? item.slot_tags : [];
+    const drainingSlots = Array.isArray(item.draining_slots) ? item.draining_slots : [];
+    const slotBadges = slotTags.map((tag) => (
+      `<span class="slot-badge" title="Слот ${escapeHtml(tag)}">${tag === 'xray-a' ? 'A' : 'B'}</span>`
+    )).join('');
+    const drainingSlot = drainingSlots[0] || '';
+    return `
     <article class="outbound-card ${item.active ? 'active' : ''} ${item.latency?.status === 'error' ? 'unavailable' : ''}">
       <div class="outbound-main">
         <div class="outbound-title-row">
+          ${slotBadges}
           <span class="outbound-title" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
           <span class="protocol-chip">${escapeHtml(item.protocol)}</span>
           ${item.active ? '<span class="active-chip">АКТИВЕН</span>' : ''}
-          ${item.draining ? '<span class="draining-chip">ЗАВЕРШАЕТ СОЕДИНЕНИЯ</span>' : ''}
+          ${drainingSlot ? '<span class="draining-chip">ЗАВЕРШАЕТ СОЕДИНЕНИЯ</span>' : ''}
         </div>
         <div class="outbound-meta" title="${escapeHtml(protocolMeta(item))}">${escapeHtml(protocolMeta(item))}</div>
       </div>
       <div class="outbound-actions">
+        ${drainingSlot ? `<button class="mini-button danger" data-stop-slot="${escapeHtml(drainingSlot)}">Стоп</button>` : ''}
         ${pingMarkup(item)}
         <button class="mini-button" data-test="${escapeHtml(item.id)}" ${operationRunning ? 'disabled' : ''}>Тест</button>
         <button class="mini-button select" data-select="${escapeHtml(item.id)}" ${item.active || operationRunning ? 'disabled' : ''}>Выбрать</button>
       </div>
-    </article>`).join('');
+    </article>`;
+  }).join('');
 
   document.querySelectorAll('[data-select]').forEach((button) => {
     button.addEventListener('click', () => selectCandidate(button.dataset.select));
@@ -293,6 +303,64 @@ function renderCandidates(payload) {
   document.querySelectorAll('[data-test]').forEach((button) => {
     button.addEventListener('click', () => testCandidates(button.dataset.test));
   });
+  document.querySelectorAll('.outbound-card [data-stop-slot]').forEach((button) => {
+    button.addEventListener('click', () => stopDrainingSlot(button.dataset.stopSlot));
+  });
+}
+
+function renderTraffic(payload) {
+  const button = $('trafficButton');
+  const router = payload.router || {};
+  const hint = $('trafficHint');
+  button.className = 'traffic-button';
+  button.disabled = true;
+  hint.className = 'traffic-hint';
+  $('routerSetup').classList.add('hidden');
+
+  if (!payload.xray_running) {
+    button.classList.add('error');
+    $('statusDot').className = 'status-dot bad';
+    $('xrayState').textContent = 'Xray остановлен';
+    hint.textContent = 'Внешнее правило нельзя включить, пока активный слот не работает';
+    hint.classList.add('bad');
+    return;
+  }
+
+  $('statusDot').className = 'status-dot ok';
+  $('xrayState').textContent = 'Xray работает';
+  if (!router.configured) {
+    button.classList.add('unknown');
+    hint.textContent = 'Управление внешним правилом отключено в настройках приложения';
+    hint.classList.add('warn');
+    return;
+  }
+  if (!router.available || typeof router.rule_enabled !== 'boolean') {
+    button.classList.add('unknown');
+    $('statusDot').className = 'status-dot warn';
+    hint.textContent = router.error || 'Состояние внешнего правила неизвестно';
+    hint.classList.add('warn');
+    if (router.public_key) {
+      $('routerKeyName').textContent = router.key_name || 'SSH-ключ';
+      $('routerPublicKey').textContent = router.public_key;
+      $('routerSetup').classList.remove('hidden');
+    }
+    return;
+  }
+
+  const ruleName = router.rule_section || 'настроенное правило';
+  button.disabled = Boolean(router.busy);
+  if (router.rule_enabled) {
+    button.classList.add('enabled');
+    button.title = `Отключить правило ${ruleName}`;
+    hint.textContent = `Правило ${ruleName} включено · нажмите, чтобы приостановить`;
+  } else {
+    button.classList.add('paused');
+    button.title = `Включить правило ${ruleName}`;
+    $('statusDot').className = 'status-dot warn';
+    $('xrayState').textContent = 'Внешнее правило отключено';
+    hint.textContent = `Xray продолжает работать, правило ${ruleName} выключено`;
+    hint.classList.add('warn');
+  }
 }
 
 function renderRuntimeStatus(payload) {
@@ -301,31 +369,25 @@ function renderRuntimeStatus(payload) {
   hint.className = 'traffic-hint';
 
   if (!payload.xray_running) {
-    $('statusDot').className = 'status-dot bad';
-    $('xrayState').textContent = 'Xray остановлен';
-    hint.textContent = 'Активный слот не работает';
+    hint.textContent = 'Активный Xray-слот не работает';
     hint.classList.add('bad');
     return;
   }
-
-  $('statusDot').className = 'status-dot ok';
-  $('xrayState').textContent = 'Xray работает';
-
   if (!selector.configured) {
-    hint.textContent = 'Управление внешним selector отключено; текущий слот остаётся активным без автоматического переключения';
+    hint.textContent = 'Управление selector отключено; автоматическое переключение слотов недоступно';
     hint.classList.add('warn');
     return;
   }
   if (!selector.available) {
     $('statusDot').className = 'status-dot warn';
-    hint.textContent = selector.error || 'Внешний selector недоступен';
+    hint.textContent = selector.error || 'Selector API недоступен';
     hint.classList.add('warn');
     return;
   }
   hint.textContent = `Selector ${payload.blue_green?.selector_tag || 'xray-active'}: ${selector.current || '—'}`;
   if (!selector.connections_supported) {
     $('statusDot').className = 'status-dot warn';
-    hint.textContent += ` · ${selector.error || 'учёт соединений недоступен'}; старый слот не будет остановлен автоматически`;
+    hint.textContent += ` · ${selector.error || 'учёт соединений недоступен'}; автоматическое завершение старого слота приостановлено`;
     hint.classList.add('warn');
   }
 }
@@ -361,23 +423,33 @@ function render(payload) {
   const backendProtocol = payload.ui_settings?.protocol_filter || 'all';
   if (!$('protocolFilter').matches(':focus')) $('protocolFilter').value = backendProtocol;
 
+  renderTraffic(payload);
   renderRuntimeStatus(payload);
   const active = payload.active;
   $('activeName').textContent = active?.name || 'Активный outbound не определён';
-  $('activeMeta').textContent = active ? `${active.protocol} · ${protocolMeta(active)}` : 'Ожидание трафика';
   const blueGreen = payload.blue_green || {};
   const activeSlot = blueGreen.slots?.[blueGreen.active_slot];
-  if (activeSlot) {
-    $('activeMeta').textContent += ` · ${blueGreen.active_slot} · SOCKS ${activeSlot.socks_tcp}`;
-  }
+  const metaParts = active ? [active.protocol, protocolMeta(active)] : ['Ожидание трафика'];
+  if (activeSlot) metaParts.push(blueGreen.active_slot, `SOCKS ${activeSlot.socks_tcp}`);
+  let activeMeta = metaParts.join(' · ');
   const drainingSlot = Object.values(blueGreen.slots || {}).find((slot) => slot.draining);
   if (drainingSlot) {
     if (drainingSlot.drain_connections > 0) {
-      $('activeMeta').textContent += ` · ${drainingSlot.tag} завершает старые соединения в количестве: ${drainingSlot.drain_connections}`;
+      activeMeta += ` / ${drainingSlot.tag} завершает старые соединения в количестве: ${drainingSlot.drain_connections}`;
     } else {
       const drainState = drainingSlot.drain_zero_since ? 'защитная пауза' : 'проверка активности';
-      $('activeMeta').textContent += ` · ${drainingSlot.tag} завершает обслуживание старых соединений: ${drainState}`;
+      activeMeta += ` / ${drainingSlot.tag} завершает старые соединения: ${drainState}`;
     }
+  }
+  $('activeMeta').textContent = activeMeta;
+  const topStop = $('stopDrainTopButton');
+  if (drainingSlot) {
+    topStop.textContent = `Стоп - ${drainingSlot.tag === 'xray-a' ? 'A' : 'B'}`;
+    topStop.dataset.stopSlot = drainingSlot.tag;
+    topStop.classList.remove('hidden');
+  } else {
+    topStop.dataset.stopSlot = '';
+    topStop.classList.add('hidden');
   }
   if (payload.route_mismatch && payload.selected_active) {
     $('activeMeta').textContent += ` · выбран в конфигурации: ${payload.selected_active.name}`;
@@ -523,7 +595,7 @@ async function fetchLogs(forceScroll = false) {
   const content = $('logsContent');
   const wasNearBottom = content.scrollHeight - content.scrollTop - content.clientHeight < 80;
   try {
-    const response = await fetch(api('api/logs?limit=2000'), { cache: 'no-store' });
+    const response = await fetch(api('api/logs?limit=2500'), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     state.logsLines = Array.isArray(payload.lines) ? payload.lines.map((line) => String(line)) : [];
@@ -634,6 +706,78 @@ function toast(message, isError = false) {
   element.className = `toast visible${isError ? ' error' : ''}`;
   window.clearTimeout(toast.timer);
   toast.timer = window.setTimeout(() => { element.className = 'toast'; }, 5000);
+}
+
+async function toggleTraffic() {
+  const router = state.payload?.router;
+  if (!router || typeof router.rule_enabled !== 'boolean') return;
+  const desired = !router.rule_enabled;
+  try {
+    $('trafficButton').disabled = true;
+    toast(desired ? 'Включение внешнего правила…' : 'Отключение внешнего правила…');
+    await post('api/traffic', { enabled: desired });
+    toast(desired ? 'Внешнее правило включено' : 'Внешнее правило приостановлено');
+    await fetchStatus();
+  } catch (error) {
+    toast(`Ошибка управления: ${error.message}`, true);
+    await fetchStatus();
+  }
+}
+
+async function stopDrainingSlot(slot) {
+  if (!slot) return;
+  try {
+    toast(`Принудительное завершение ${slot}…`);
+    await post('api/drain/stop', { slot });
+    toast(`Слот ${slot} остановлен`);
+    await fetchStatus();
+  } catch (error) {
+    toast(`Ошибка: ${error.message}`, true);
+  }
+}
+
+function rawLogsText() {
+  return state.logsLines.length ? `${state.logsLines.join('\n')}\n` : '';
+}
+
+async function copyLogs() {
+  const text = rawLogsText();
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_error) {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand('copy');
+    area.remove();
+  }
+  toast('Скопировано в буфер обмена');
+}
+
+function downloadLogs() {
+  toast('Выгрузка в файл...');
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+  ].join('-') + '_' + [
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('-');
+  const blob = new Blob([rawLogsText()], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `xray-proxy-manager-logs-${stamp}.txt`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function selectCandidate(id) {
@@ -755,6 +899,21 @@ document.addEventListener('keydown', (event) => {
 });
 $('testAllButton').addEventListener('click', () => testCandidates());
 $('refreshButton').addEventListener('click', refreshSubscription);
+$('trafficButton').addEventListener('click', toggleTraffic);
+$('stopDrainTopButton').addEventListener('click', () => stopDrainingSlot($('stopDrainTopButton').dataset.stopSlot));
+$('logsCopyButton').addEventListener('click', copyLogs);
+$('logsDownloadButton').addEventListener('click', downloadLogs);
+$('copyRouterKey').addEventListener('click', async () => {
+  const key = $('routerPublicKey').textContent.trim();
+  if (!key) return;
+  try {
+    await navigator.clipboard.writeText(key);
+    toast('Публичный ключ скопирован');
+  } catch (_error) {
+    window.getSelection()?.selectAllChildren($('routerPublicKey'));
+    toast('Ключ выделен — скопируйте его вручную');
+  }
+});
 $('saveAutoChecker').addEventListener('click', saveAutoChecker);
 $('saveSubscription').addEventListener('click', saveSubscriptionSettings);
 ['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoCheckInterval', 'autoCheckFailures', 'autoSwitchExcludedCountries', 'autoSwitchMinPingDelta'].forEach((id) => {

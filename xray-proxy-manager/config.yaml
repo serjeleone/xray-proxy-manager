@@ -1,8 +1,8 @@
 name: Xray Proxy Manager
-version: "0.5.0"
+version: "0.6.0"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
-description: "Управление Xray через два независимых SOCKS5-слота с предварительной проверкой и безопасным переключением outbound"
+description: "Управление Xray через два независимых SOCKS5-слота, проверку outbound и безопасное переключение"
 url: "https://github.com/serjeleone/xray-proxy-manager"
 arch:
   - aarch64
@@ -62,12 +62,23 @@ options:
   latency_test_url: "https://www.gstatic.com/generate_204"
   health_check_url: "https://www.gstatic.com/generate_204"
   selector_control_enabled: false
-  selector_api_url: "http://192.0.2.1:9090"
+  selector_api_url: "http://192.168.0.1:9090"
   selector_api_secret: ""
   selector_tag: "xray-active"
   selector_status_interval_seconds: 10
   drain_quiet_seconds: 30
   drain_poll_interval_seconds: 2
+  drain_timeout_minutes: 0
+  router_control_enabled: true
+  router_host: "192.168.0.1"
+  router_ssh_port: 22
+  router_ssh_user: "root"
+  router_auth_method: "existing_key"
+  router_ssh_key_name: "id_ed25519"
+  router_ssh_key_path: ""
+  router_ssh_password: ""
+  router_firewall_rule: "mark_domains"
+  router_status_interval_seconds: 10
   ui_sort: "ping-asc"
   ui_protocol_filter: "all"
   ui_max_ping_ms: 1000
@@ -108,6 +119,17 @@ schema:
   selector_status_interval_seconds: int(5,)
   drain_quiet_seconds: int(5,)
   drain_poll_interval_seconds: int(1,)
+  drain_timeout_minutes: int(0,1440)
+  router_control_enabled: bool
+  router_host: str
+  router_ssh_port: port
+  router_ssh_user: str
+  router_auth_method: list(existing_key|password|generate_key)
+  router_ssh_key_name: str
+  router_ssh_key_path: str?
+  router_ssh_password: password?
+  router_firewall_rule: str
+  router_status_interval_seconds: int(5,)
   ui_sort: list(name-asc|name-desc|ping-asc|ping-desc|protocol-asc|protocol-desc)
   ui_protocol_filter: str
   ui_max_ping_ms: int(0,10000)

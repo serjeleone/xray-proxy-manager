@@ -4,9 +4,8 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "xray-proxy-manager/**"
-      - ".github/workflows/build.yml"
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions: {}
@@ -28,13 +27,14 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       version: ${{ steps.version.outputs.version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
-      - name: Read app version
+      - name: Read and validate app version
         id: version
         shell: bash
         run: |
@@ -43,7 +43,13 @@ jobs:
             echo "Unable to read version from xray-proxy-manager/config.yaml" >&2
             exit 1
           fi
+          release_tag="v${version}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "${release_tag}" ]]; then
+            echo "Git tag ${GITHUB_REF_NAME} does not match app release tag ${release_tag}" >&2
+            exit 1
+          fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare architecture matrix
         id: matrix
@@ -77,6 +83,7 @@ jobs:
           context: ./xray-proxy-manager
           image: ${{ matrix.image }}
           image-tags: |
+            ${{ needs.init.outputs.release_tag }}
             ${{ needs.init.outputs.version }}
             latest
           labels: |
@@ -87,6 +94,7 @@ jobs:
             org.opencontainers.image.title=Xray Proxy Manager
             org.opencontainers.image.description=Home Assistant app for Xray outbound management with two independent SOCKS5 slots
             org.opencontainers.image.authors=serjeleone
+            org.opencontainers.image.version=${{ needs.init.outputs.release_tag }}
             org.opencontainers.image.documentation=https://github.com/serjeleone/xray-proxy-manager/blob/main/xray-proxy-manager/DOCS.md
           push: "true"
           version: ${{ needs.init.outputs.version }}
@@ -108,5 +116,6 @@ jobs:
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
           image-name: ${{ env.IMAGE_NAME }}
           image-tags: |
+            ${{ needs.init.outputs.release_tag }}
             ${{ needs.init.outputs.version }}
             latest

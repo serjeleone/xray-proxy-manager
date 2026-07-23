@@ -8,6 +8,7 @@ import http.server
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -26,7 +27,8 @@ from typing import Any, Iterable
 from urllib.parse import parse_qs, quote, urlparse
 
 OPTIONS_PATH = Path('/data/options.json')
-WORKDIR = Path('/config/xray-proxy-manager')
+WORKDIR = Path('/config')
+LEGACY_WORKDIR = Path('/config/xray-proxy-manager')
 SUBSCRIPTION_PATH = WORKDIR / 'subscription.json'
 CONFIG_PATH = WORKDIR / 'config.json'
 SLOT_CONFIG_PATHS = {
@@ -43,11 +45,14 @@ CHANGELOG_PATH = Path('/CHANGELOG.md')
 LOG_PREFIX = '[xray-proxy-manager]'
 XRAY_BIN = '/usr/local/bin/xray'
 CURL_BIN = '/usr/bin/curl'
+SSH_BIN = '/usr/bin/ssh'
+SSHPASS_BIN = '/usr/bin/sshpass'
+SSH_KEYGEN_BIN = '/usr/bin/ssh-keygen'
 UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.5.0'
+ADDON_VERSION = '0.6.0'
 
 DIRECT_PROTOCOLS = {'freedom', 'blackhole', 'dns', 'loopback'}
 DIRECT_TAGS = {
@@ -75,6 +80,10 @@ RUNTIME_SETTING_KEYS = {
 OUTBOUND_LOG_RE = re.compile(r'\[[^\]\n]*?->\s*([^\]\s]+)\]')
 XRAY_READING_CONFIG_RE = re.compile(r'(Reading config:)\s*&\{Name:([^}\s]+)\s+Format:[^}]+\}')
 SAFE_RULE_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+SAFE_KEY_NAME_RE = re.compile(r'^[A-Za-z0-9._-]+$')
+ROUTER_AUTH_METHODS = {'existing_key', 'password', 'generate_key'}
+ROUTER_PRIMARY_KEY_DIR = Path('/config/ssh')
+ROUTER_SECONDARY_KEY_DIR = WORKDIR / 'ssh'
 LOG_BUFFER_MAX_LINES = 2500
 LOG_BUFFER: deque[str] = deque(maxlen=LOG_BUFFER_MAX_LINES)
 LOG_BUFFER_LOCK = threading.Lock()
@@ -207,7 +216,7 @@ def release_notes_payload() -> dict[str, Any]:
             ]
     except OSError:
         pass
-    RELEASE_NOTES_CACHE = {'version': ADDON_VERSION, 'items': items}
+    RELEASE_NOTES_CACHE = {'version': f'v{ADDON_VERSION}', 'items': items}
     return copy.deepcopy(RELEASE_NOTES_CACHE)
 
 
@@ -450,8 +459,24 @@ class XraySlot:
         return bool(self.process and self.process.poll() is None)
 
 
+def migrate_legacy_workdir() -> None:
+    if not LEGACY_WORKDIR.exists() or LEGACY_WORKDIR == WORKDIR:
+        return
+    WORKDIR.mkdir(parents=True, exist_ok=True)
+    for source in list(LEGACY_WORKDIR.iterdir()):
+        target = WORKDIR / source.name
+        if target.exists():
+            continue
+        shutil.move(str(source), str(target))
+    try:
+        LEGACY_WORKDIR.rmdir()
+    except OSError:
+        pass
+
+
 class XrayManager:
     def __init__(self) -> None:
+        migrate_legacy_workdir()
         WORKDIR.mkdir(parents=True, exist_ok=True)
         # Remove the invalidly named temporary file left by 0.3.0, if present.
         CONFIG_PATH.with_suffix('.json.new').unlink(missing_ok=True)
@@ -492,7 +517,7 @@ class XrayManager:
 
         self.selector_control_enabled = to_bool(self.options.get('selector_control_enabled', False))
         self.selector_api_url = str(
-            self.options.get('selector_api_url') or 'http://192.0.2.1:9090'
+            self.options.get('selector_api_url') or 'http://192.168.0.1:9090'
         ).rstrip('/')
         self.selector_api_secret = str(self.options.get('selector_api_secret') or '')
         self.selector_tag = str(self.options.get('selector_tag') or 'xray-active').strip()
@@ -503,6 +528,30 @@ class XrayManager:
         self.drain_poll_interval_seconds = max(1, int(
             self.options.get('drain_poll_interval_seconds', 2) or 2
         ))
+        self.drain_timeout_minutes = max(
+            0, int(self.options.get('drain_timeout_minutes', 0) or 0)
+        )
+
+        self.router_control_enabled = to_bool(self.options.get('router_control_enabled', True))
+        self.router_host = str(self.options.get('router_host') or '192.168.0.1').strip()
+        self.router_ssh_port = int(self.options.get('router_ssh_port', 22) or 22)
+        self.router_ssh_user = str(self.options.get('router_ssh_user') or 'root').strip()
+        self.router_ssh_password = str(self.options.get('router_ssh_password') or '')
+        configured_auth_method = str(self.options.get('router_auth_method') or '').strip().lower()
+        if not configured_auth_method:
+            configured_auth_method = 'password' if self.router_ssh_password else 'existing_key'
+        if configured_auth_method not in ROUTER_AUTH_METHODS:
+            raise RuntimeError('router_auth_method must be existing_key, password or generate_key.')
+        self.router_auth_method = configured_auth_method
+        self.router_ssh_key_name = self.normalize_router_key_name(
+            self.options.get('router_ssh_key_name') or 'id_ed25519'
+        )
+        self.router_ssh_key_path_override = str(self.options.get('router_ssh_key_path') or '').strip()
+        self.router_ssh_key_path: Path | None = None
+        self.router_firewall_rule = str(self.options.get('router_firewall_rule') or 'mark_domains').strip()
+        self.router_status_interval_seconds = max(
+            5, int(self.options.get('router_status_interval_seconds', 10) or 10)
+        )
 
         self.auto_checker_enabled = True
         self.auto_switch_best_enabled = True
@@ -524,6 +573,8 @@ class XrayManager:
             raise RuntimeError('proxy_username and proxy_password must be set together, or both left empty.')
         if not SAFE_RULE_RE.fullmatch(self.selector_tag):
             raise RuntimeError('selector_tag contains unsupported characters.')
+        if not SAFE_RULE_RE.fullmatch(self.router_firewall_rule):
+            raise RuntimeError('router_firewall_rule contains unsupported characters.')
         if self.socks_tcp_b == self.socks_tcp_a:
             raise RuntimeError('socks_tcp_b must differ from socks_tcp_a.')
         if not self.override_inbounds:
@@ -534,6 +585,7 @@ class XrayManager:
 
         self.lock = threading.RLock()
         self.switch_lock = threading.Lock()
+        self.router_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.settings_event = threading.Event()
         self.subscription: list[dict[str, Any]] = []
@@ -598,6 +650,20 @@ class XrayManager:
             'connections_supported': False,
             'last_checked_at': None,
         }
+        self.router_state: dict[str, Any] = {
+            'configured': self.router_control_enabled,
+            'available': False,
+            'rule_enabled': None,
+            'rule_section': '',
+            'busy': False,
+            'last_checked_at': None,
+            'error': '',
+            'auth_method': self.router_auth_method,
+            'key_name': self.router_ssh_key_name if self.router_auth_method != 'password' else '',
+            'public_key': '',
+        }
+        self.prepare_router_auth()
+
     def _apply_runtime_values(self, source: dict[str, Any]) -> None:
         self.subscription_url = str(source.get('subscription_url') or '').strip()
         self.auto_checker_enabled = to_bool(source.get('auto_checker_enabled', True))
@@ -838,7 +904,8 @@ class XrayManager:
             self.active_candidate_id = current_slot.candidate_id
             duplicate_tag = self.other_slot_tag(current)
             duplicate = self.slots[duplicate_tag]
-            if duplicate.running():
+            duplicate_running = duplicate.running()
+            if duplicate_running:
                 duplicate.draining = True
                 duplicate.drain_started_at = now_ts()
                 duplicate.drain_zero_since = None
@@ -853,8 +920,10 @@ class XrayManager:
                 log(f'could not save reconciled last-good config: {exc}', error=True)
         if previous_slot_tag != current:
             log(f'startup selector reconciled from {previous_slot_tag} to {current}')
+        elif duplicate_running:
+            log(f'startup selector confirmed on {current}; extra slot will drain')
         else:
-            log(f'startup selector confirmed on {current}; duplicate slot will drain')
+            log(f'startup selector confirmed on {current}')
 
     def restore_selector_alignment(self, reported_current: str) -> None:
         with self.lock:
@@ -957,6 +1026,303 @@ class XrayManager:
         while not self.stop_event.is_set():
             self.refresh_selector_status()
             if self.stop_event.wait(self.selector_status_interval_seconds):
+                break
+
+    # ----- OpenWrt firewall control -------------------------------------------------
+
+    @staticmethod
+    def normalize_router_key_name(value: Any) -> str:
+        name = str(value or '').strip()
+        if name.endswith('.pub'):
+            name = name[:-4]
+        if not name or name in {'.', '..'} or Path(name).name != name:
+            raise RuntimeError('router_ssh_key_name must contain only a file name, without a path.')
+        if not SAFE_KEY_NAME_RE.fullmatch(name):
+            raise RuntimeError('router_ssh_key_name contains unsupported characters.')
+        return name
+
+    def router_key_candidates(self) -> list[Path]:
+        candidates: list[Path] = [
+            ROUTER_PRIMARY_KEY_DIR / self.router_ssh_key_name,
+            ROUTER_SECONDARY_KEY_DIR / self.router_ssh_key_name,
+            WORKDIR / self.router_ssh_key_name,
+        ]
+        if self.router_ssh_key_path_override:
+            candidates.append(Path(self.router_ssh_key_path_override))
+        candidates.append(WORKDIR / 'router_ssh_key')
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate)
+            if key not in seen:
+                seen.add(key)
+                unique.append(candidate)
+        return unique
+
+    @staticmethod
+    def public_key_path(private_path: Path) -> Path:
+        return Path(f'{private_path}.pub')
+
+    def ensure_public_key_file(self, private_path: Path) -> Path:
+        public_path = self.public_key_path(private_path)
+        result = subprocess.run(
+            [SSH_KEYGEN_BIN, '-y', '-f', str(private_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        derived_key = result.stdout.strip()
+        if not derived_key:
+            raise RuntimeError('ssh-keygen did not return a public key')
+
+        existing_key = ''
+        if public_path.exists():
+            existing_key = public_path.read_text(encoding='utf-8').strip()
+        derived_identity = ' '.join(derived_key.split()[:2])
+        existing_identity = ' '.join(existing_key.split()[:2])
+        if existing_identity != derived_identity:
+            public_path.write_text(
+                f'{derived_key} xray-proxy-manager@homeassistant\n',
+                encoding='utf-8',
+            )
+        public_path.chmod(0o644)
+        return public_path
+
+    def install_generated_key_with_password(self, public_key: str) -> None:
+        if not self.router_ssh_password:
+            return
+        remote_script = (
+            'set -e; umask 077; mkdir -p /etc/dropbear; '
+            'touch /etc/dropbear/authorized_keys; '
+            f'KEY={shlex.quote(public_key)}; '
+            'grep -qxF "$KEY" /etc/dropbear/authorized_keys 2>/dev/null || '
+            'printf "%s\n" "$KEY" >> /etc/dropbear/authorized_keys; '
+            'chmod 600 /etc/dropbear/authorized_keys; echo key-installed'
+        )
+        command = [
+            SSHPASS_BIN, '-e', SSH_BIN,
+            '-p', str(self.router_ssh_port),
+            '-o', 'ConnectTimeout=6',
+            '-o', 'ServerAliveInterval=5',
+            '-o', 'ServerAliveCountMax=1',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-o', f'UserKnownHostsFile={WORKDIR / "router_known_hosts"}',
+            '-o', 'LogLevel=ERROR',
+            '-o', 'BatchMode=no',
+            '-o', 'PreferredAuthentications=password,keyboard-interactive',
+            f'{self.router_ssh_user}@{self.router_host}',
+            remote_script,
+        ]
+        environment = os.environ.copy()
+        environment['SSHPASS'] = self.router_ssh_password
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=20, env=environment
+        )
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout or f'ssh exit {result.returncode}').strip()
+            raise RuntimeError(f'Не удалось установить сгенерированный ключ: {message}')
+
+    def prepare_router_auth(self) -> None:
+        if not self.router_control_enabled:
+            return
+        if self.router_auth_method == 'password':
+            if not self.router_ssh_password:
+                self.router_state['error'] = 'Для password требуется router_ssh_password'
+            return
+        try:
+            key_path: Path | None = None
+            for candidate in self.router_key_candidates():
+                if candidate.exists() and candidate.is_file():
+                    key_path = candidate
+                    break
+
+            if key_path is None and self.router_auth_method == 'generate_key':
+                key_path = ROUTER_PRIMARY_KEY_DIR / self.router_ssh_key_name
+                key_path.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    [SSH_KEYGEN_BIN, '-q', '-t', 'ed25519', '-N', '', '-C',
+                     'xray-proxy-manager@homeassistant', '-f', str(key_path)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+
+            if key_path is None:
+                searched = ', '.join(str(item) for item in self.router_key_candidates())
+                raise RuntimeError(
+                    f'Приватный SSH-ключ {self.router_ssh_key_name} не найден. Проверены: {searched}'
+                )
+
+            key_path.chmod(0o600)
+            public_path = self.ensure_public_key_file(key_path)
+            self.router_ssh_key_path = key_path
+            public_key = public_path.read_text(encoding='utf-8').strip()
+            self.router_state['public_key'] = public_key
+            self.router_state['key_name'] = self.router_ssh_key_name
+
+            if self.router_auth_method == 'generate_key' and self.router_ssh_password:
+                self.install_generated_key_with_password(public_key)
+        except Exception as exc:
+            self.router_state['error'] = f'Не удалось подготовить SSH-доступ: {exc}'
+            log(self.router_state['error'], error=True)
+
+    def router_ssh_command(self, remote_command: str) -> tuple[list[str], dict[str, str]]:
+        command: list[str] = []
+        environment = os.environ.copy()
+        use_password = self.router_auth_method == 'password'
+        if use_password:
+            command.extend([SSHPASS_BIN, '-e'])
+            environment['SSHPASS'] = self.router_ssh_password
+        command.extend([
+            SSH_BIN,
+            '-p', str(self.router_ssh_port),
+            '-o', 'ConnectTimeout=6',
+            '-o', 'ServerAliveInterval=5',
+            '-o', 'ServerAliveCountMax=1',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-o', f'UserKnownHostsFile={WORKDIR / "router_known_hosts"}',
+            '-o', 'LogLevel=ERROR',
+        ])
+        if use_password:
+            command.extend(['-o', 'BatchMode=no', '-o', 'PreferredAuthentications=password,keyboard-interactive'])
+        else:
+            if self.router_ssh_key_path is None:
+                raise RuntimeError('SSH-ключ для OpenWrt не подготовлен')
+            command.extend(['-o', 'BatchMode=yes', '-i', str(self.router_ssh_key_path)])
+        command.extend([f'{self.router_ssh_user}@{self.router_host}', remote_command])
+        return command, environment
+
+    def run_router_command(self, remote_command: str, timeout: int = 20) -> str:
+        if not self.router_control_enabled:
+            raise RuntimeError('Управление правилом OpenWrt отключено в настройках')
+        if self.router_auth_method == 'password':
+            if not self.router_ssh_password:
+                raise RuntimeError('Пароль OpenWrt не указан')
+        elif self.router_ssh_key_path is None or not self.router_ssh_key_path.exists():
+            raise RuntimeError(f'Приватный SSH-ключ {self.router_ssh_key_name} не найден')
+        command, environment = self.router_ssh_command(remote_command)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=environment,
+        )
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout or f'ssh exit {result.returncode}').strip()
+            raise RuntimeError(message)
+        return result.stdout.strip()
+
+    def router_rule_remote_script(self, desired: bool | None = None) -> str:
+        # router_firewall_rule is validated by SAFE_RULE_RE during initialization.
+        lines = [
+            'set -e',
+            f'RULE={shlex.quote(self.router_firewall_rule)}',
+            'SECTION="$RULE"',
+            'if ! uci -q get "firewall.$SECTION" >/dev/null 2>&1; then',
+            r'''  SECTION="$(uci -q show firewall | sed -n "s/^firewall\.\([^=]*\)\.name='$RULE'$/\1/p" | head -n 1)"''',
+            'fi',
+            '[ -n "$SECTION" ] || { echo "rule-not-found"; exit 4; }',
+        ]
+        if desired is not None:
+            value = '1' if desired else '0'
+            lines.extend([
+                f'uci set "firewall.$SECTION.enabled={value}"',
+                'uci commit firewall',
+                'RELOAD_LOG=/tmp/xray-proxy-manager-firewall-reload.log',
+                'if ! /etc/init.d/firewall reload >"$RELOAD_LOG" 2>&1; then',
+                '  cat "$RELOAD_LOG" >&2',
+                '  exit 5',
+                'fi',
+            ])
+        lines.extend([
+            'VALUE="$(uci -q get "firewall.$SECTION.enabled" || true)"',
+            'if [ "$VALUE" = "0" ]; then',
+            '  printf "disabled:%s\n" "$SECTION"',
+            'else',
+            '  printf "enabled:%s\n" "$SECTION"',
+            'fi',
+        ])
+        return f'sh -c {shlex.quote(chr(10).join(lines))}'
+
+    def refresh_router_status(self) -> None:
+        if not self.router_control_enabled:
+            with self.lock:
+                self.router_state.update({
+                    'configured': False,
+                    'available': False,
+                    'rule_enabled': None,
+                    'error': 'Управление правилом отключено',
+                    'last_checked_at': now_ts(),
+                })
+            return
+        try:
+            output = self.run_router_command(self.router_rule_remote_script(), timeout=12)
+            match = re.search(r'^(enabled|disabled):(.+)$', output.strip(), re.MULTILINE)
+            if not match:
+                raise RuntimeError(output or 'OpenWrt вернул неизвестный ответ')
+            enabled = match.group(1) == 'enabled'
+            section = match.group(2).strip()
+            with self.lock:
+                self.router_state.update({
+                    'configured': True,
+                    'available': True,
+                    'rule_enabled': enabled,
+                    'rule_section': section,
+                    'error': '',
+                    'last_checked_at': now_ts(),
+                })
+        except Exception as exc:
+            with self.lock:
+                self.router_state.update({
+                    'configured': True,
+                    'available': False,
+                    'rule_enabled': None,
+                    'error': str(exc),
+                    'last_checked_at': now_ts(),
+                })
+
+    def set_router_rule(self, enabled: bool) -> None:
+        if not self.router_lock.acquire(blocking=False):
+            raise RuntimeError('Изменение правила уже выполняется')
+        try:
+            with self.lock:
+                self.router_state['busy'] = True
+            output = self.run_router_command(self.router_rule_remote_script(enabled), timeout=25)
+            match = re.search(r'^(enabled|disabled):(.+)$', output.strip(), re.MULTILINE)
+            if not match:
+                raise RuntimeError(output or 'OpenWrt вернул неизвестный ответ')
+            actual_enabled = match.group(1) == 'enabled'
+            if actual_enabled != enabled:
+                raise RuntimeError('Правило не перешло в требуемое состояние')
+            with self.lock:
+                self.router_state.update({
+                    'available': True,
+                    'rule_enabled': actual_enabled,
+                    'rule_section': match.group(2).strip(),
+                    'error': '',
+                    'last_checked_at': now_ts(),
+                })
+        except Exception as exc:
+            with self.lock:
+                self.router_state.update({
+                    'available': False,
+                    'rule_enabled': None,
+                    'error': str(exc),
+                    'last_checked_at': now_ts(),
+                })
+            raise
+        finally:
+            with self.lock:
+                self.router_state['busy'] = False
+            self.router_lock.release()
+
+    def router_status_loop(self) -> None:
+        while not self.stop_event.is_set():
+            self.refresh_router_status()
+            if self.stop_event.wait(self.router_status_interval_seconds):
                 break
 
     # ----- Subscription and Xray configuration -------------------------------------
@@ -1064,6 +1430,24 @@ class XrayManager:
 
     def candidate_by_id(self, candidate_id: str) -> Candidate | None:
         return next((item for item in self.candidates if item.id == candidate_id), None)
+
+    @staticmethod
+    def same_outbound(left: Candidate | None, right: Candidate | None) -> bool:
+        if left is None or right is None:
+            return False
+        if left.id == right.id or left.fingerprint == right.fingerprint:
+            return True
+        return (
+            left.protocol.casefold(),
+            left.server.casefold(),
+            left.port,
+            left.outbound_tag,
+        ) == (
+            right.protocol.casefold(),
+            right.server.casefold(),
+            right.port,
+            right.outbound_tag,
+        )
 
     def candidate_by_tag(self, outbound_tag: str, preferred_source: int | None = None) -> Candidate | None:
         matches = [item for item in self.candidates if item.outbound_tag == outbound_tag]
@@ -1357,6 +1741,24 @@ class XrayManager:
             slot.drain_bytes = 0
             slot.drain_last_error = ''
 
+    def force_stop_draining_slot(self, slot_tag: str = '') -> str:
+        with self.lock:
+            targets = [slot_tag] if slot_tag else [
+                tag for tag in SLOT_TAGS if self.slots[tag].draining
+            ]
+            if len(targets) != 1 or targets[0] not in SLOT_TAGS:
+                raise ValueError('Дренируемый слот не найден')
+            target = targets[0]
+            slot = self.slots[target]
+            if target == self.active_slot_tag:
+                raise RuntimeError('Активный слот нельзя завершить принудительно')
+            if not slot.draining:
+                raise RuntimeError(f'{target} не находится в состоянии дренирования')
+            connections = slot.drain_connections
+        log(f'force-stopping drained slot {target} with {connections} tracked connections', error=True)
+        self.stop_slot(target)
+        return target
+
     def start_xray(self) -> None:
         candidate = self.candidate_by_id(self.active_candidate_id)
         if candidate is not None:
@@ -1477,21 +1879,8 @@ class XrayManager:
             average, _checks = self.validate_slot(self.active_slot_tag)
 
             if self.selector_control_enabled and not selector_known:
-                # A selector service restart resets a selector to its configured default.
-                # If the API is temporarily unavailable, run the same candidate in
-                # both slots so traffic remains valid regardless of which member the
-                # external selector currently selects. Reconcile and drain the duplicate once
-                # the API becomes reachable.
-                safety_slot_tag = self.other_slot_tag(self.active_slot_tag)
-                self.start_slot(safety_slot_tag, candidate)
-                started_slots.append(safety_slot_tag)
-                self.validate_slot(safety_slot_tag)
                 self.selector_reconciliation_pending = True
-                log(
-                    'selector state is unknown; both Xray slots were started with '
-                    'the same outbound for startup safety',
-                    error=True,
-                )
+                log('selector state is unknown; startup keeps only the remembered active slot', error=True)
 
             self.active_candidate_id = candidate.id
             self.state['last_switch_at'] = now_ts()
@@ -1525,6 +1914,7 @@ class XrayManager:
         reason: str,
         *,
         force_reload: bool = False,
+        preempt_draining: bool = False,
     ) -> None:
         if not self.selector_control_enabled:
             raise RuntimeError('Blue-green переключение требует доступного внешнего selector')
@@ -1566,11 +1956,8 @@ class XrayManager:
                 })
                 self.save_state()
                 active_slot = self.slots[self.active_slot_tag]
-                if (
-                    not force_reload
-                    and candidate.id == self.active_candidate_id
-                    and active_slot.running()
-                ):
+                active_candidate = active_slot.candidate or self.candidate_by_id(self.active_candidate_id)
+                if active_slot.running() and self.same_outbound(candidate, active_candidate):
                     return
                 old_slot_tag = self.active_slot_tag
                 standby_tag = self.other_slot_tag(old_slot_tag)
@@ -1578,13 +1965,17 @@ class XrayManager:
                 stop_standby = False
                 standby_needs_rebuild = (
                     standby.running()
-                    and (standby.candidate_id != candidate.id or force_reload)
+                    and (
+                        standby.draining
+                        or not self.same_outbound(candidate, standby.candidate)
+                        or force_reload
+                    )
                 )
                 if standby_needs_rebuild:
-                    if standby.draining:
+                    if standby.draining and not preempt_draining:
                         raise RuntimeError(
                             f'{standby_tag} ещё обслуживает старые соединения '
-                            f'({standby.drain_connections}); дождитесь завершения дренирования'
+                            f'({standby.drain_connections}); автоматическое переключение отложено'
                         )
                     stop_standby = True
 
@@ -1593,7 +1984,7 @@ class XrayManager:
             standby = self.slots[standby_tag]
             if not standby.running():
                 self.start_slot(standby_tag, candidate)
-            elif standby.candidate_id != candidate.id:
+            elif not self.same_outbound(candidate, standby.candidate):
                 raise RuntimeError(f'{standby_tag} занят другим outbound')
 
             with self.lock:
@@ -1869,6 +2260,7 @@ class XrayManager:
         reason: str,
         *,
         force_reload: bool = False,
+        preempt_draining: bool = False,
     ) -> None:
         with self.lock:
             active_running = self.slots[self.active_slot_tag].running()
@@ -1879,6 +2271,7 @@ class XrayManager:
             candidate,
             reason,
             force_reload=force_reload,
+            preempt_draining=preempt_draining,
         )
 
     def local_tcp_connection_count(self, port: int) -> int:
@@ -1948,7 +2341,14 @@ class XrayManager:
                     slot.drain_bytes = total_bytes
                     slot.drain_last_error = ''
                     current_time = now_ts()
-                    if total_connections == 0 and total_bytes == previous_bytes:
+                    timeout_reached = bool(
+                        self.drain_timeout_minutes > 0
+                        and slot.drain_started_at
+                        and current_time - slot.drain_started_at >= self.drain_timeout_minutes * 60
+                    )
+                    if timeout_reached:
+                        stop_now = True
+                    elif total_connections == 0 and total_bytes == previous_bytes:
                         if slot.drain_zero_since is None:
                             slot.drain_zero_since = current_time
                         elif (
@@ -1959,10 +2359,19 @@ class XrayManager:
                     else:
                         slot.drain_zero_since = None
                 if stop_now:
-                    log(
-                        f'{slot_tag} has no tracked connections or traffic for '
-                        f'{self.drain_quiet_seconds}s; stopping drained slot'
-                    )
+                    if self.drain_timeout_minutes > 0 and slot.drain_started_at and (
+                        now_ts() - slot.drain_started_at >= self.drain_timeout_minutes * 60
+                    ):
+                        log(
+                            f'{slot_tag} drain timeout of {self.drain_timeout_minutes} min reached; '
+                            f'forcing slot stop with {slot.drain_connections} tracked connections',
+                            error=True,
+                        )
+                    else:
+                        log(
+                            f'{slot_tag} has no tracked connections or traffic for '
+                            f'{self.drain_quiet_seconds}s; stopping drained slot'
+                        )
                     self.stop_slot(slot_tag)
 
     def resolve_last_good_candidate(self) -> Candidate | None:
@@ -2093,12 +2502,19 @@ class XrayManager:
             same_candidate = selected.id == self.active_candidate_id
 
         force_reload = False
-        if downloaded and not initial and same_candidate and active_running:
+        with self.lock:
+            active_candidate = self.slots[active_slot_tag].candidate or old_candidate
+            same_outbound = self.same_outbound(selected, active_candidate)
+        if downloaded and not initial and same_outbound and active_running:
             force_reload = self.runtime_config_differs(active_slot_tag, selected)
+            if force_reload:
+                log(
+                    'subscription changed the active outbound configuration; '
+                    'reload is deferred until a different outbound is selected'
+                )
         should_apply = (
             initial
-            or not same_candidate
-            or force_reload
+            or not same_outbound
             or not active_running
         )
 
@@ -2360,7 +2776,7 @@ class XrayManager:
                     should_switch = (
                         current is None
                         or (
-                            current.id != best_candidate.id
+                            not self.same_outbound(current, best_candidate)
                             and (
                                 not isinstance(current_latency, int)
                                 or ping_difference >= self.auto_switch_min_ping_delta_ms
@@ -2377,7 +2793,7 @@ class XrayManager:
                             f'periodic latency check switched to {best_candidate.name} '
                             f'({best_latency} ms, difference {ping_difference} ms)'
                         )
-                    elif current is not None and current.id == best_candidate.id:
+                    elif current is not None and self.same_outbound(current, best_candidate):
                         final_message = f'Проверка завершена · текущий outbound оптимален ({current_latency} мс)'
                     elif current is not None and isinstance(ping_difference, int):
                         if ping_difference < 0:
@@ -2471,7 +2887,8 @@ class XrayManager:
     def choose_failover_candidate(self) -> Candidate | None:
         excluded_text = self.auto_switch_excluded_countries or 'нет'
         healthy = self.sorted_healthy_candidates(exclude_configured_countries=True)
-        alternatives = [item for item in healthy if item.id != self.active_candidate_id]
+        active = self.slots[self.active_slot_tag].candidate or self.candidate_by_id(self.active_candidate_id)
+        alternatives = [item for item in healthy if not self.same_outbound(item, active)]
         if alternatives:
             return alternatives[0]
 
@@ -2481,7 +2898,7 @@ class XrayManager:
             error=True,
         )
         for candidate in list(self.candidates):
-            if candidate.id == self.active_candidate_id:
+            if self.same_outbound(candidate, active):
                 continue
             if self.candidate_country_is_excluded(candidate):
                 log(
@@ -2493,7 +2910,7 @@ class XrayManager:
             self.latencies[candidate.id] = result
         self.save_latencies()
         healthy = self.sorted_healthy_candidates(exclude_configured_countries=True)
-        return next((item for item in healthy if item.id != self.active_candidate_id), None)
+        return next((item for item in healthy if not self.same_outbound(item, active)), None)
 
     def auto_checker_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -2659,14 +3076,21 @@ class XrayManager:
             process_running = active_slot.running()
             active, selected, mismatch = self.effective_active_candidate()
             effective_id = active.id if active else ''
-            draining_candidate_ids = {
-                slot.candidate_id for slot in self.slots.values()
-                if slot.draining and slot.candidate_id
-            }
+            active_slot_candidate = active_slot.candidate or selected or active
             candidates = []
             for item in self.candidates:
-                payload = item.public(self.latencies.get(item.id), item.id == effective_id)
-                payload['draining'] = item.id in draining_candidate_ids
+                assigned_slots = [
+                    tag for tag, slot in self.slots.items()
+                    if slot.running() and self.same_outbound(item, slot.candidate or self.candidate_by_id(slot.candidate_id))
+                ]
+                draining_slots = [
+                    tag for tag in assigned_slots if self.slots[tag].draining
+                ]
+                is_active = self.same_outbound(item, active_slot_candidate)
+                payload = item.public(self.latencies.get(item.id), is_active)
+                payload['slot_tags'] = assigned_slots
+                payload['draining_slots'] = draining_slots
+                payload['draining'] = bool(draining_slots)
                 candidates.append(payload)
             protocols = sorted({item.protocol for item in self.candidates})
             available_count = sum(
@@ -2750,10 +3174,12 @@ class XrayManager:
                     'hide_unavailable': self.ui_hide_unavailable,
                 },
                 'selector': copy.deepcopy(self.selector_state),
+                'router': copy.deepcopy(self.router_state),
                 'blue_green': {
                     'active_slot': self.active_slot_tag,
                     'selector_tag': self.selector_tag,
                     'drain_quiet_seconds': self.drain_quiet_seconds,
+                    'drain_timeout_minutes': self.drain_timeout_minutes,
                     'slots': slots_payload,
                 },
                 'latency_test_url': self.latency_test_url,
@@ -2781,7 +3207,11 @@ class XrayManager:
             )
         if already_active:
             return
-        self.restart_xray_for(candidate, 'manual selection from UI')
+        self.restart_xray_for(
+            candidate,
+            'manual selection from UI',
+            preempt_draining=True,
+        )
 
     def initialize(self) -> None:
         cached = self.load_cached_subscription()
@@ -2825,6 +3255,7 @@ class XrayManager:
         threading.Thread(target=self.xray_monitor_loop, daemon=True).start()
         threading.Thread(target=self.drain_monitor_loop, daemon=True).start()
         threading.Thread(target=self.selector_status_loop, daemon=True).start()
+        threading.Thread(target=self.router_status_loop, daemon=True).start()
 
         handler_factory = lambda *args, **kwargs: WebHandler(self, *args, **kwargs)
         self.server = ThreadingHTTPServer(('0.0.0.0', UI_PORT), handler_factory)
@@ -2953,6 +3384,20 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
             if path.endswith('/api/settings'):
                 changes = payload.get('changes') if isinstance(payload.get('changes'), dict) else payload
                 self.send_json(self.manager.update_runtime_settings(changes))
+                return
+            if path.endswith('/api/traffic'):
+                desired = payload.get('enabled')
+                if not isinstance(desired, bool):
+                    current = self.manager.router_state.get('rule_enabled')
+                    if not isinstance(current, bool):
+                        raise ValueError('Состояние правила OpenWrt неизвестно')
+                    desired = not current
+                self.manager.set_router_rule(desired)
+                self.send_json({'ok': True, 'enabled': desired})
+                return
+            if path.endswith('/api/drain/stop'):
+                stopped = self.manager.force_stop_draining_slot(str(payload.get('slot') or ''))
+                self.send_json({'ok': True, 'slot': stopped})
                 return
             self.send_json({'ok': False, 'error': 'not found'}, 404)
         except Exception as exc:
