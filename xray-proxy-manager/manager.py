@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 import hashlib
 import http.server
 import json
@@ -52,7 +53,7 @@ UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.6.3'
+ADDON_VERSION = '0.6.4'
 
 DIRECT_PROTOCOLS = {'freedom', 'blackhole', 'dns', 'loopback'}
 DIRECT_TAGS = {
@@ -87,6 +88,8 @@ ROUTER_SECONDARY_KEY_DIR = WORKDIR / 'ssh'
 LOG_BUFFER_MAX_LINES = 2500
 LOG_BUFFER: deque[str] = deque(maxlen=LOG_BUFFER_MAX_LINES)
 LOG_BUFFER_LOCK = threading.Lock()
+TEST_PORT_LOCK = threading.Lock()
+RESERVED_TEST_PORTS: set[int] = set()
 RELEASE_NOTES_CACHE: dict[str, Any] | None = None
 ANSI_ESCAPE_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 ISO_COUNTRY_CODES = {
@@ -541,6 +544,9 @@ class XrayManager:
         self.auto_add_proxy_direct = to_bool(self.options.get('auto_add_proxy_direct', True))
         self.restart_on_runtime_error = to_bool(self.options.get('restart_on_runtime_error', True))
         self.latency_test_timeout_seconds = max(3, int(self.options.get('latency_test_timeout_seconds', 12) or 12))
+        self.latency_test_parallelism = max(
+            0, min(32, int(self.options.get('latency_test_parallelism', 0) or 0))
+        )
         self.latency_test_url = str(self.options.get('latency_test_url') or 'https://www.gstatic.com/generate_204')
         self.health_check_url = str(self.options.get('health_check_url') or self.latency_test_url)
 
@@ -2673,9 +2679,32 @@ class XrayManager:
     # ----- Latency and health checks ------------------------------------------------
 
     def find_free_port(self) -> int:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(('127.0.0.1', 0))
-            return int(sock.getsockname()[1])
+        # Temporary Xray instances are started concurrently. Keep selected
+        # ephemeral ports reserved in-process until each test has finished so
+        # two workers cannot receive the same port between bind() and Xray start.
+        with TEST_PORT_LOCK:
+            for _attempt in range(100):
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.bind(('127.0.0.1', 0))
+                    port = int(sock.getsockname()[1])
+                if port not in RESERVED_TEST_PORTS:
+                    RESERVED_TEST_PORTS.add(port)
+                    return port
+        raise RuntimeError('Unable to reserve a temporary SOCKS port')
+
+    def release_test_port(self, port: int) -> None:
+        with TEST_PORT_LOCK:
+            RESERVED_TEST_PORTS.discard(port)
+
+    def effective_latency_test_parallelism(self, candidate_count: int) -> int:
+        if candidate_count <= 1:
+            return max(1, candidate_count)
+        configured = max(0, int(self.latency_test_parallelism))
+        if configured > 0:
+            return max(1, min(configured, candidate_count))
+        cpu_count = max(1, int(os.cpu_count() or 1))
+        automatic = min(8, max(2, cpu_count * 2))
+        return max(1, min(automatic, candidate_count))
 
     def wait_for_port(self, port: int, process: subprocess.Popen[str], timeout: float = 4.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -2721,69 +2750,71 @@ class XrayManager:
 
     def test_candidate(self, candidate: Candidate) -> dict[str, Any]:
         port = self.find_free_port()
-        with tempfile.TemporaryDirectory(prefix='xray-latency.') as temp_dir:
-            config_path = Path(temp_dir) / 'config.json'
-            log_path = Path(temp_dir) / 'xray.log'
-            try:
-                config = self.build_config(candidate, test_port=port)
-                atomic_write_json(config_path, config)
-                ok, output = self.xray_test(config_path)
-                if not ok:
-                    return {'status': 'error', 'latency_ms': None, 'checked_at': now_ts(), 'error': output[-500:]}
-
-                with log_path.open('w+', encoding='utf-8') as log_file:
-                    process = subprocess.Popen(
-                        [XRAY_BIN, '-config', str(config_path)],
-                        stdout=log_file,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                    )
-                    try:
-                        if not self.wait_for_port(port, process):
-                            log_file.flush()
-                            log_file.seek(0)
-                            error_text = log_file.read()[-500:] or 'temporary xray did not open SOCKS port'
+        try:
+            with tempfile.TemporaryDirectory(prefix='xray-latency.') as temp_dir:
+                config_path = Path(temp_dir) / 'config.json'
+                log_path = Path(temp_dir) / 'xray.log'
+                try:
+                    config = self.build_config(candidate, test_port=port)
+                    atomic_write_json(config_path, config)
+                    ok, output = self.xray_test(config_path)
+                    if not ok:
+                        return {'status': 'error', 'latency_ms': None, 'checked_at': now_ts(), 'error': output[-500:]}
+    
+                    with log_path.open('w+', encoding='utf-8') as log_file:
+                        process = subprocess.Popen(
+                            [XRAY_BIN, '-config', str(config_path)],
+                            stdout=log_file,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                        )
+                        try:
+                            if not self.wait_for_port(port, process):
+                                log_file.flush()
+                                log_file.seek(0)
+                                error_text = log_file.read()[-500:] or 'temporary xray did not open SOCKS port'
+                                return {
+                                    'status': 'error',
+                                    'latency_ms': None,
+                                    'checked_at': now_ts(),
+                                    'error': error_text,
+                                }
+                            success, latency_ms, error_text = self.proxy_curl(
+                                '127.0.0.1',
+                                port,
+                                self.latency_test_url,
+                                self.latency_test_timeout_seconds,
+                                auth=False,
+                            )
+                            if success and latency_ms is not None:
+                                return {
+                                    'status': 'ok',
+                                    'latency_ms': int(round(latency_ms)),
+                                    'checked_at': now_ts(),
+                                    'error': '',
+                                }
                             return {
                                 'status': 'error',
                                 'latency_ms': None,
                                 'checked_at': now_ts(),
-                                'error': error_text,
+                                'error': error_text[-500:],
                             }
-                        success, latency_ms, error_text = self.proxy_curl(
-                            '127.0.0.1',
-                            port,
-                            self.latency_test_url,
-                            self.latency_test_timeout_seconds,
-                            auth=False,
-                        )
-                        if success and latency_ms is not None:
-                            return {
-                                'status': 'ok',
-                                'latency_ms': int(round(latency_ms)),
-                                'checked_at': now_ts(),
-                                'error': '',
-                            }
-                        return {
-                            'status': 'error',
-                            'latency_ms': None,
-                            'checked_at': now_ts(),
-                            'error': error_text[-500:],
-                        }
-                    finally:
-                        process.terminate()
-                        try:
-                            process.wait(timeout=3)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            process.wait(timeout=2)
-            except Exception as exc:
-                return {
-                    'status': 'error',
-                    'latency_ms': None,
-                    'checked_at': now_ts(),
-                    'error': str(exc)[-500:],
-                }
-
+                        finally:
+                            process.terminate()
+                            try:
+                                process.wait(timeout=3)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                                process.wait(timeout=2)
+                except Exception as exc:
+                    return {
+                        'status': 'error',
+                        'latency_ms': None,
+                        'checked_at': now_ts(),
+                        'error': str(exc)[-500:],
+                    }
+        finally:
+            self.release_test_port(port)
     def latency_job(
         self,
         candidate_ids: list[str] | None = None,
@@ -2796,33 +2827,58 @@ class XrayManager:
                 if candidate_ids is None or item.id in candidate_ids
             ]
             job = self.state['jobs']['latency']
-            job.update({'running': True, 'progress': 0, 'total': len(candidates), 'message': 'Проверка доступности...'})
+            workers = self.effective_latency_test_parallelism(len(candidates))
+            job.update({
+                'running': True,
+                'progress': 0,
+                'total': len(candidates),
+                'message': f'Проверка доступности · параллельно: {workers}',
+            })
             self.save_state()
 
         fresh_results: dict[str, dict[str, Any]] = {}
         final_message = 'Проверка завершена'
         try:
-            for index, candidate in enumerate(candidates, start=1):
-                if self.stop_event.is_set():
-                    break
-                result = self.test_candidate(candidate)
-                fresh_results[candidate.id] = result
-                with self.lock:
-                    self.latencies[candidate.id] = result
-                    self.save_latencies()
-                    job = self.state['jobs']['latency']
-                    job.update({
-                        'progress': index,
-                        'message': f'{candidate.name}: ' + (
-                            f'{result["latency_ms"]} мс' if result['status'] == 'ok' else 'недоступен'
-                        ),
-                    })
-                    self.save_state()
+            completed = 0
+            futures: dict[Future[dict[str, Any]], Candidate] = {}
+            with ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix='xray-latency',
+            ) as executor:
+                for candidate in candidates:
+                    if self.stop_event.is_set():
+                        break
+                    futures[executor.submit(self.test_candidate, candidate)] = candidate
 
-            if source == 'auto-check':
-                with self.lock:
-                    self.state['auto_check_last_at'] = now_ts()
-                    self.save_state()
+                for future in as_completed(futures):
+                    candidate = futures[future]
+                    if self.stop_event.is_set():
+                        for pending in futures:
+                            pending.cancel()
+                        break
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {
+                            'status': 'error',
+                            'latency_ms': None,
+                            'checked_at': now_ts(),
+                            'error': str(exc)[-500:],
+                        }
+                    fresh_results[candidate.id] = result
+                    completed += 1
+                    with self.lock:
+                        self.latencies[candidate.id] = result
+                        self.save_latencies()
+                        job = self.state['jobs']['latency']
+                        job.update({
+                            'progress': completed,
+                            'message': f'{candidate.name}: ' + (
+                                f'{result["latency_ms"]} мс'
+                                if result['status'] == 'ok' else 'недоступен'
+                            ),
+                        })
+                        self.save_state()
 
             if switch_to_best and fresh_results and not self.stop_event.is_set():
                 healthy: list[tuple[int, str, Candidate]] = []
@@ -2845,7 +2901,7 @@ class XrayManager:
                         current_latency = (
                             current_result.get('latency_ms')
                             if isinstance(current_result, dict) and current_result.get('status') == 'ok'
-                            else None
+                            else self.candidate_latency_ms(current)
                         )
 
                     ping_difference = (
@@ -2865,11 +2921,11 @@ class XrayManager:
                     if should_switch:
                         self.restart_xray_for(
                             best_candidate,
-                            f'automatic best latency after periodic check: {best_latency} ms',
+                            f'automatic best latency after {source} check: {best_latency} ms',
                         )
                         final_message = f'Проверка завершена · выбран {best_candidate.name} ({best_latency} мс)'
                         log(
-                            f'periodic latency check switched to {best_candidate.name} '
+                            f'{source} latency check switched to {best_candidate.name} '
                             f'({best_latency} ms, difference {ping_difference} ms)'
                         )
                     elif current is not None and self.same_outbound(current, best_candidate):
@@ -2897,9 +2953,9 @@ class XrayManager:
         finally:
             with self.lock:
                 self.state['jobs']['latency'].update({'running': False, 'message': final_message})
-                if source == 'manual':
-                    # Wake the periodic checker after the manual test has fully
-                    # completed. Its next wait therefore starts from this moment.
+                if source in {'manual', 'auto-check', 'startup'}:
+                    # The next periodic interval begins only after the complete
+                    # full-list test and its possible single switch have finished.
                     self.state['auto_check_last_at'] = now_ts()
                     self.settings_event.set()
                 self.save_state()
@@ -3035,6 +3091,13 @@ class XrayManager:
                 self.settings_event.clear()
                 continue
             if not self.auto_checker_enabled:
+                continue
+            with self.lock:
+                latency_running = bool(self.state['jobs']['latency'].get('running'))
+            if latency_running:
+                # The startup or manual full-list test will wake this loop after
+                # completion and start a fresh interval from that moment.
+                self.settings_event.wait(1.0)
                 continue
             try:
                 success, latency_ms, error = self.check_active_tunnel()
@@ -3412,6 +3475,17 @@ class XrayManager:
 
     def run(self) -> None:
         self.initialize()
+        if self.auto_checker_enabled:
+            accepted = self.request_latency_test(
+                None,
+                switch_to_best=self.auto_switch_best_enabled,
+                source='startup',
+            )
+            if accepted:
+                log(
+                    'startup latency check started in background '
+                    f'(parallelism {self.effective_latency_test_parallelism(len(self.candidates))})'
+                )
         threading.Thread(target=self.auto_checker_loop, daemon=True).start()
         threading.Thread(target=self.periodic_update_loop, daemon=True).start()
         threading.Thread(target=self.xray_monitor_loop, daemon=True).start()

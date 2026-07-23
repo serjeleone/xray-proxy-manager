@@ -1,5 +1,5 @@
 name: Xray Proxy Manager
-version: "0.6.3"
+version: "0.6.4"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
 description: "Управление Xray через два независимых SOCKS5-слота, проверку outbound и безопасное переключение"
@@ -59,6 +59,7 @@ options:
   auto_check_failures: 3
   auto_check_timeout_seconds: 12
   latency_test_timeout_seconds: 12
+  latency_test_parallelism: 0
   latency_test_url: "https://www.gstatic.com/generate_204"
   health_check_url: "https://www.gstatic.com/generate_204"
   selector_control_enabled: false
@@ -110,6 +111,7 @@ schema:
   auto_check_failures: int(1,100)
   auto_check_timeout_seconds: int(3,)
   latency_test_timeout_seconds: int(3,)
+  latency_test_parallelism: int(0,32)
   latency_test_url: str
   health_check_url: str
   selector_control_enabled: bool

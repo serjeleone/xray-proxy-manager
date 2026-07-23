@@ -1,0 +1,154 @@
+configuration:
+  subscription_url:
+    name: URL подписки
+    description: Адрес JSON-подписки с конфигурациями Xray.
+  config_index:
+    name: Резервный индекс конфигурации
+    description: Корневой индекс для старта, когда нет запомненного outbound и сохранённых latency.
+  update_interval_hours:
+    name: Обновление подписки, ч
+    description: Интервал загрузки подписки; 0 отключает расписание.
+  listen_lan:
+    name: Доступ из локальной сети
+    description: Слушать SOCKS5 на всех интерфейсах, а не только localhost.
+  socks_tcp_a:
+    name: SOCKS-порт слота A
+    description: TCP-порт SOCKS5 для xray-a; UDP использует тот же номер.
+  socks_tcp_b:
+    name: SOCKS-порт слота B
+    description: TCP-порт SOCKS5 для xray-b; UDP использует тот же номер.
+  socks_udp_a:
+    name: UDP в слоте A
+    description: Разрешить SOCKS5 UDP relay для xray-a.
+  socks_udp_b:
+    name: UDP в слоте B
+    description: Разрешить SOCKS5 UDP relay для xray-b.
+  override_inbounds:
+    name: Заменять inbounds
+    description: Создавать управляемый SOCKS5-inbound вместо inbounds из подписки.
+  proxy_username:
+    name: Пользователь SOCKS5
+    description: Необязательное имя пользователя; задаётся вместе с паролем.
+  proxy_password:
+    name: Пароль SOCKS5
+    description: Необязательный пароль; задаётся вместе с именем пользователя.
+  disable_observatory:
+    name: Отключить observatory
+    description: Удалять observatory из загруженной конфигурации.
+  log_level:
+    name: Уровень логов Xray
+    description: Подробность журнала процесса Xray.
+  user_agent:
+    name: User-Agent подписки
+    description: Заголовок User-Agent при загрузке подписки.
+  validate_routing_tags:
+    name: Проверять routing-теги
+    description: Проверять ссылки routing на существующие outbound.
+  auto_fix_routing_tags:
+    name: Исправлять routing-теги
+    description: Автоматически исправлять допустимые отсутствующие ссылки.
+  restart_on_runtime_error:
+    name: Перезапуск при ошибке
+    description: Завершать приложение для перезапуска, если восстановление Xray невозможно.
+  auto_add_proxy_direct:
+    name: Добавлять proxy-direct
+    description: Создавать служебный direct-outbound при необходимости.
+  auto_checker_enabled:
+    name: Автоматические проверки
+    description: Запускать фоновую проверку при старте и затем по расписанию.
+  auto_switch_best_enabled:
+    name: Выбирать лучший outbound
+    description: После полной проверки переключаться на достаточно более быстрый вариант.
+  auto_switch_excluded_countries:
+    name: Исключения автоматики
+    description: ISO-коды стран и фрагменты строк через запятую; на ручной выбор не влияют.
+  auto_switch_min_ping_delta_ms:
+    name: Минимальная разница, мс
+    description: Минимальное улучшение пинга для автоматического переключения.
+  auto_check_interval_seconds:
+    name: Интервал проверок, с
+    description: Время от завершения полной проверки до следующей.
+  auto_check_failures:
+    name: Порог ошибок
+    description: Число последовательных ошибок активного пути до failover.
+  auto_check_timeout_seconds:
+    name: Таймаут активного пути, с
+    description: Максимальное время проверки текущего рабочего туннеля.
+  latency_test_timeout_seconds:
+    name: Таймаут outbound, с
+    description: Максимальное время отдельного измерения latency.
+  latency_test_parallelism:
+    name: Параллельность проверок
+    description: 0 — автоматический безопасный предел; 1–32 — максимум одновременных проверок.
+  latency_test_url:
+    name: URL измерения latency
+    description: Адрес запроса через каждый проверяемый outbound.
+  health_check_url:
+    name: URL проверки туннеля
+    description: Адрес запроса для проверки активного рабочего пути.
+  selector_control_enabled:
+    name: Управление selector
+    description: Переключать внешний selector между xray-a и xray-b.
+  selector_api_url:
+    name: URL selector API
+    description: Базовый адрес совместимого Clash selector API.
+  selector_api_secret:
+    name: Секрет selector API
+    description: Bearer-токен доступа к selector API.
+  selector_tag:
+    name: Имя selector
+    description: Тег selector, содержащего элементы xray-a и xray-b.
+  selector_status_interval_seconds:
+    name: Опрос selector, с
+    description: Интервал обновления состояния selector и соединений.
+  drain_quiet_seconds:
+    name: Пауза перед остановкой, с
+    description: Сколько ждать нулевую активность перед остановкой старого слота.
+  drain_poll_interval_seconds:
+    name: Опрос дренирования, с
+    description: Интервал пересчёта оставшихся соединений старого слота.
+  drain_timeout_minutes:
+    name: Таймаут дренирования, мин
+    description: 0 — ждать естественно; другое значение принудительно остановит слот по таймауту.
+  router_control_enabled:
+    name: Управление OpenWrt
+    description: Показать play/pause и управлять правилом firewall через SSH.
+  router_host:
+    name: Адрес OpenWrt
+    description: IP-адрес или имя SSH-узла с правилом firewall.
+  router_ssh_port:
+    name: SSH-порт OpenWrt
+    description: Порт SSH-сервера удалённого узла.
+  router_ssh_user:
+    name: SSH-пользователь
+    description: Имя пользователя для подключения к OpenWrt.
+  router_auth_method:
+    name: Метод SSH-авторизации
+    description: Существующий ключ, пароль или автоматическое создание ключа.
+  router_ssh_key_name:
+    name: Имя SSH-ключа
+    description: Имя приватного ключа в каталоге /config/ssh.
+  router_ssh_key_path:
+    name: Путь к SSH-ключу
+    description: Необязательный путь относительно каталога конфигурации приложения.
+  router_ssh_password:
+    name: SSH-пароль
+    description: Пароль для метода password.
+  router_firewall_rule:
+    name: Имя правила firewall
+    description: Имя UCI-правила, которое переключает кнопка play/pause.
+  router_status_interval_seconds:
+    name: Опрос OpenWrt, с
+    description: Интервал проверки текущего состояния правила.
+  ui_sort:
+    name: Сортировка списка
+    description: Начальный порядок outbound в веб-интерфейсе.
+  ui_protocol_filter:
+    name: Фильтр протокола
+    description: Начальный фильтр протокола; all показывает все.
+  ui_max_ping_ms:
+    name: Максимальный пинг UI, мс
+    description: Скрывать в интерфейсе результаты выше заданного значения; 0 отключает.
+  ui_hide_unavailable:
+    name: Скрывать недоступные
+    description: Не показывать outbound с неуспешной проверкой.

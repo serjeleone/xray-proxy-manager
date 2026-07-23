@@ -331,5 +331,82 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(instance.auto_check_wait_seconds(1_700), 0.0)
 
 
+    def test_config_index_is_fallback_without_memory_or_latency(self) -> None:
+        first = candidate("first", "198.51.100.70")
+        indexed = manager.Candidate(
+            **{**candidate("indexed", "198.51.100.71").__dict__, "source_index": 2}
+        )
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.candidates = [first, indexed]
+        instance.state = {}
+        instance.config_index = 2
+        instance.auto_switch_best_enabled = True
+        instance.auto_switch_excluded_countries = "RU"
+        instance.auto_switch_min_ping_delta_ms = 100
+        instance.latencies = {}
+
+        selected = instance.choose_initial_candidate()
+
+        self.assertEqual(selected.id, indexed.id)
+
+    def test_latency_parallelism_uses_configured_or_automatic_limit(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.latency_test_parallelism = 3
+        self.assertEqual(instance.effective_latency_test_parallelism(10), 3)
+        self.assertEqual(instance.effective_latency_test_parallelism(2), 2)
+
+        instance.latency_test_parallelism = 0
+        original_cpu_count = manager.os.cpu_count
+        manager.os.cpu_count = lambda: 4
+        try:
+            self.assertEqual(instance.effective_latency_test_parallelism(20), 8)
+            self.assertEqual(instance.effective_latency_test_parallelism(3), 3)
+        finally:
+            manager.os.cpu_count = original_cpu_count
+
+    def test_latency_job_runs_in_parallel_and_resets_interval_after_completion(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.candidates = [candidate(f"candidate-{index}", f"198.51.100.{80 + index}") for index in range(6)]
+        instance.latencies = {}
+        instance.latency_test_parallelism = 3
+        instance.stop_event = threading.Event()
+        instance.settings_event = threading.Event()
+        instance.state = {
+            "jobs": {"latency": {"running": False, "progress": 0, "total": 0, "message": ""}},
+            "auto_check_last_at": 0,
+        }
+        instance.save_state = lambda: None
+        instance.save_latencies = lambda: None
+        active = 0
+        maximum = 0
+        counter_lock = threading.Lock()
+
+        def fake_test(selected):
+            nonlocal active, maximum
+            with counter_lock:
+                active += 1
+                maximum = max(maximum, active)
+            time.sleep(0.04)
+            with counter_lock:
+                active -= 1
+            return {
+                "status": "ok",
+                "latency_ms": 100,
+                "checked_at": int(time.time()),
+                "error": "",
+            }
+
+        instance.test_candidate = fake_test
+        before = int(time.time())
+        instance.latency_job(None, switch_to_best=False, source="startup")
+
+        self.assertGreater(maximum, 1)
+        self.assertLessEqual(maximum, 3)
+        self.assertEqual(instance.state["jobs"]["latency"]["progress"], 6)
+        self.assertGreaterEqual(instance.state["auto_check_last_at"], before)
+        self.assertTrue(instance.settings_event.is_set())
+
+
 if __name__ == "__main__":
     unittest.main()

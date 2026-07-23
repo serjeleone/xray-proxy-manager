@@ -79,6 +79,30 @@ jobs:
               raise SystemExit('Undocumented settings: ' + ', '.join(missing))
           PY
 
+      - name: Validate Configuration translations
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          config = yaml.safe_load(Path('xray-proxy-manager/config.yaml').read_text())
+          keys = set(config.get('schema', {}))
+          for language in ('ru', 'en'):
+              path = Path(f'xray-proxy-manager/translations/{language}.yaml')
+              data = yaml.safe_load(path.read_text()) or {}
+              translated = data.get('configuration', {})
+              missing = sorted(keys - set(translated))
+              incomplete = sorted(
+                  key for key in keys
+                  if not translated.get(key, {}).get('name')
+                  or not translated.get(key, {}).get('description')
+              )
+              if missing or incomplete:
+                  raise SystemExit(
+                      f'{language}: missing={missing}; incomplete={incomplete}'
+                  )
+          PY
+
       - name: Validate Markdown containers
         run: |
           python - <<'PY'

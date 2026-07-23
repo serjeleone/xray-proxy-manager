@@ -1,0 +1,154 @@
+configuration:
+  subscription_url:
+    name: Subscription URL
+    description: JSON subscription URL containing Xray configurations.
+  config_index:
+    name: Fallback configuration index
+    description: Root configuration index used when no remembered outbound or cached latency is available.
+  update_interval_hours:
+    name: Subscription update, hours
+    description: Subscription refresh interval; 0 disables scheduled updates.
+  listen_lan:
+    name: Listen on LAN
+    description: Expose SOCKS5 on all interfaces instead of localhost only.
+  socks_tcp_a:
+    name: Slot A SOCKS port
+    description: SOCKS5 TCP port for xray-a; UDP uses the same port number.
+  socks_tcp_b:
+    name: Slot B SOCKS port
+    description: SOCKS5 TCP port for xray-b; UDP uses the same port number.
+  socks_udp_a:
+    name: Slot A UDP
+    description: Enable SOCKS5 UDP relay for xray-a.
+  socks_udp_b:
+    name: Slot B UDP
+    description: Enable SOCKS5 UDP relay for xray-b.
+  override_inbounds:
+    name: Override inbounds
+    description: Create the managed SOCKS5 inbound instead of subscription inbounds.
+  proxy_username:
+    name: SOCKS5 username
+    description: Optional username; must be set together with the password.
+  proxy_password:
+    name: SOCKS5 password
+    description: Optional password; must be set together with the username.
+  disable_observatory:
+    name: Disable observatory
+    description: Remove observatory from downloaded configurations.
+  log_level:
+    name: Xray log level
+    description: Logging verbosity of Xray processes.
+  user_agent:
+    name: Subscription User-Agent
+    description: User-Agent header used to download the subscription.
+  validate_routing_tags:
+    name: Validate routing tags
+    description: Check routing references against available outbounds.
+  auto_fix_routing_tags:
+    name: Repair routing tags
+    description: Automatically repair supported missing routing references.
+  restart_on_runtime_error:
+    name: Restart on runtime error
+    description: Exit for restart when the active Xray process cannot be recovered.
+  auto_add_proxy_direct:
+    name: Add proxy-direct
+    description: Create the helper direct outbound when required.
+  auto_checker_enabled:
+    name: Automatic checks
+    description: Run a background full check at startup and later on schedule.
+  auto_switch_best_enabled:
+    name: Select best outbound
+    description: Switch to a sufficiently faster outbound after a full check.
+  auto_switch_excluded_countries:
+    name: Automatic exclusions
+    description: Comma-separated ISO country codes and text fragments; manual selection is unaffected.
+  auto_switch_min_ping_delta_ms:
+    name: Minimum difference, ms
+    description: Minimum latency improvement required for automatic switching.
+  auto_check_interval_seconds:
+    name: Check interval, seconds
+    description: Time from completion of one full check to the next.
+  auto_check_failures:
+    name: Failure threshold
+    description: Consecutive active-path failures required before failover.
+  auto_check_timeout_seconds:
+    name: Active path timeout, seconds
+    description: Maximum time for checking the current working tunnel.
+  latency_test_timeout_seconds:
+    name: Outbound timeout, seconds
+    description: Maximum time for one outbound latency measurement.
+  latency_test_parallelism:
+    name: Check parallelism
+    description: 0 selects a safe automatic limit; 1–32 sets the maximum concurrent tests.
+  latency_test_url:
+    name: Latency test URL
+    description: Request URL used through each tested outbound.
+  health_check_url:
+    name: Tunnel health URL
+    description: Request URL used to check the active working path.
+  selector_control_enabled:
+    name: Selector control
+    description: Switch an external selector between xray-a and xray-b.
+  selector_api_url:
+    name: Selector API URL
+    description: Base URL of a compatible Clash selector API.
+  selector_api_secret:
+    name: Selector API secret
+    description: Bearer token for selector API access.
+  selector_tag:
+    name: Selector name
+    description: Selector tag containing xray-a and xray-b.
+  selector_status_interval_seconds:
+    name: Selector polling, seconds
+    description: Refresh interval for selector and connection status.
+  drain_quiet_seconds:
+    name: Drain quiet period, seconds
+    description: Required zero-activity period before stopping the old slot.
+  drain_poll_interval_seconds:
+    name: Drain polling, seconds
+    description: Interval for recounting old-slot connections.
+  drain_timeout_minutes:
+    name: Drain timeout, minutes
+    description: 0 waits naturally; another value force-stops the slot after the timeout.
+  router_control_enabled:
+    name: OpenWrt control
+    description: Show play/pause and control a firewall rule over SSH.
+  router_host:
+    name: OpenWrt host
+    description: IP address or hostname of the SSH firewall host.
+  router_ssh_port:
+    name: OpenWrt SSH port
+    description: SSH server port on the remote host.
+  router_ssh_user:
+    name: SSH user
+    description: Username used to connect to OpenWrt.
+  router_auth_method:
+    name: SSH authentication
+    description: Use an existing key, a password, or generate a key.
+  router_ssh_key_name:
+    name: SSH key name
+    description: Private key filename inside /config/ssh.
+  router_ssh_key_path:
+    name: SSH key path
+    description: Optional path relative to the app configuration directory.
+  router_ssh_password:
+    name: SSH password
+    description: Password used by the password authentication method.
+  router_firewall_rule:
+    name: Firewall rule name
+    description: UCI rule name controlled by the play/pause button.
+  router_status_interval_seconds:
+    name: OpenWrt polling, seconds
+    description: Interval for checking the current rule state.
+  ui_sort:
+    name: List sorting
+    description: Initial outbound order in the web interface.
+  ui_protocol_filter:
+    name: Protocol filter
+    description: Initial protocol filter; all displays every protocol.
+  ui_max_ping_ms:
+    name: Maximum UI ping, ms
+    description: Hide results above this latency in the UI; 0 disables the limit.
+  ui_hide_unavailable:
+    name: Hide unavailable
+    description: Do not show outbounds with a failed test.
