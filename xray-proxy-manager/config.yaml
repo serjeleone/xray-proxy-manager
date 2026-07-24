@@ -1,5 +1,5 @@
 name: Xray Proxy Manager
-version: "0.6.5"
+version: "0.6.6"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
 description: "Управление Xray через два независимых SOCKS5-слота, проверку outbound и безопасное переключение"
@@ -50,13 +50,15 @@ options:
   auto_switch_best_enabled: true
   auto_switch_excluded_countries: "RU"
   auto_switch_min_ping_delta_ms: 100
-  auto_check_interval_seconds: 600
+  auto_check_interval_seconds: 60
+  auto_best_check_interval_seconds: 600
+  auto_check_max_latency_ms: 500
   auto_check_failures: 3
   auto_check_timeout_seconds: 12
   latency_test_timeout_seconds: 12
   latency_test_parallelism: 0
   latency_test_url: "https://www.gstatic.com/generate_204"
-  health_check_url: "https://www.gstatic.com/generate_204"
+  health_check_url: "https://cp.cloudflare.com/generate_204"
   selector_control_enabled: false
   selector_api_url: "http://192.168.0.1:9090"
   selector_api_secret: ""
@@ -103,6 +105,8 @@ schema:
   auto_switch_excluded_countries: str
   auto_switch_min_ping_delta_ms: int(0,10000)
   auto_check_interval_seconds: int(10,86400)
+  auto_best_check_interval_seconds: int(60,86400)
+  auto_check_max_latency_ms: int(0,10000)
   auto_check_failures: int(1,100)
   auto_check_timeout_seconds: int(3,)
   latency_test_timeout_seconds: int(3,)

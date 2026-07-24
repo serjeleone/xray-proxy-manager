@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=9">
+  <link rel="stylesheet" href="style.css?ui=11">
 </head>
 <body>
   <main class="shell">
@@ -105,15 +105,23 @@
 
         <div class="checker-fields">
           <label>
-            <span>Период, секунд</span>
+            <span>Проверка слота, секунд</span>
             <input id="autoCheckInterval" type="number" min="10" max="86400" step="1" inputmode="numeric">
+          </label>
+          <label>
+            <span>Полная проверка, секунд</span>
+            <input id="autoBestCheckInterval" type="number" min="60" max="86400" step="1" inputmode="numeric">
+          </label>
+          <label>
+            <span>Макс. задержка, мс</span>
+            <input id="autoCheckMaxLatency" type="number" min="0" max="10000" step="1" inputmode="numeric">
           </label>
           <label>
             <span>Порог ошибок, подряд</span>
             <input id="autoCheckFailures" type="number" min="1" max="100" step="1" inputmode="numeric">
           </label>
           <label>
-            <span>Исключить из автоматики</span>
+            <span>Исключить из выбора</span>
             <input id="autoSwitchExcludedCountries" type="text" maxlength="512" inputmode="text" autocomplete="off" placeholder="RU, Лучший сервер">
           </label>
           <label>
@@ -248,6 +256,6 @@
     </div>
   </div>
 
-  <script src="app.js?ui=9"></script>
+  <script src="app.js?ui=11"></script>
 </body>
 </html>

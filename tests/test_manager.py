@@ -100,8 +100,10 @@ class ManagerLogicTests(unittest.TestCase):
         instance.auto_switch_best_enabled = True
         instance.auto_switch_excluded_countries = "RU"
         instance.auto_switch_min_ping_delta_ms = 100
-        instance.auto_check_interval_seconds = 600
-        instance.auto_check_failures = 3
+        instance.auto_check_interval_seconds = 60
+        instance.auto_check_failures = 2
+        instance.auto_check_max_latency_ms = 500
+        instance.auto_best_check_interval_seconds = 600
         instance.ui_sort = "ping-asc"
         instance.ui_protocol_filter = "all"
         instance.ui_max_ping_ms = 1000
@@ -154,8 +156,10 @@ class ManagerLogicTests(unittest.TestCase):
         instance.auto_switch_best_enabled = True
         instance.auto_switch_excluded_countries = "RU"
         instance.auto_switch_min_ping_delta_ms = 100
-        instance.auto_check_interval_seconds = 600
-        instance.auto_check_failures = 3
+        instance.auto_check_interval_seconds = 60
+        instance.auto_check_failures = 2
+        instance.auto_check_max_latency_ms = 500
+        instance.auto_best_check_interval_seconds = 600
         instance.ui_sort = "ping-asc"
         instance.ui_protocol_filter = "all"
         instance.ui_max_ping_ms = 1000
@@ -293,6 +297,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.auto_switch_best_enabled = True
         instance.auto_switch_excluded_countries = "RU, Обходы белых списков"
         instance.auto_switch_min_ping_delta_ms = 100
+        instance.auto_check_max_latency_ms = 500
         instance.latencies = {
             remembered.id: {"status": "ok", "latency_ms": 343},
             faster.id: {"status": "ok", "latency_ms": 141},
@@ -312,6 +317,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.auto_switch_best_enabled = True
         instance.auto_switch_excluded_countries = "RU"
         instance.auto_switch_min_ping_delta_ms = 100
+        instance.auto_check_max_latency_ms = 500
         instance.latencies = {
             remembered.id: {"status": "ok", "latency_ms": 220},
             faster.id: {"status": "ok", "latency_ms": 141},
@@ -343,6 +349,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.auto_switch_best_enabled = True
         instance.auto_switch_excluded_countries = "RU"
         instance.auto_switch_min_ping_delta_ms = 100
+        instance.auto_check_max_latency_ms = 500
         instance.latencies = {}
 
         selected = instance.choose_initial_candidate()
@@ -364,10 +371,14 @@ class ManagerLogicTests(unittest.TestCase):
         finally:
             manager.os.cpu_count = original_cpu_count
 
-    def test_latency_job_runs_in_parallel_and_resets_interval_after_completion(self) -> None:
+    def test_latency_job_runs_in_parallel_and_resets_best_check_interval_after_completion(self) -> None:
         instance = manager.XrayManager.__new__(manager.XrayManager)
         instance.lock = threading.RLock()
         instance.candidates = [candidate(f"candidate-{index}", f"198.51.100.{80 + index}") for index in range(6)]
+        instance.slots = {
+            "xray-a": manager.XraySlot("xray-a", 10808, True, Path("/tmp/a")),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
+        }
         instance.latencies = {}
         instance.latency_test_parallelism = 3
         instance.stop_event = threading.Event()
@@ -375,6 +386,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.state = {
             "jobs": {"latency": {"running": False, "progress": 0, "total": 0, "message": ""}},
             "auto_check_last_at": 0,
+            "auto_best_check_last_at": 0,
         }
         instance.save_state = lambda: None
         instance.save_latencies = lambda: None
@@ -404,8 +416,198 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertGreater(maximum, 1)
         self.assertLessEqual(maximum, 3)
         self.assertEqual(instance.state["jobs"]["latency"]["progress"], 6)
-        self.assertGreaterEqual(instance.state["auto_check_last_at"], before)
+        self.assertGreaterEqual(instance.state["auto_best_check_last_at"], before)
         self.assertTrue(instance.settings_event.is_set())
+
+
+    def test_endpoint_pair_runs_in_parallel_and_uses_minimum(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.latency_test_url = "https://latency.example/"
+        instance.health_check_url = "https://health.example/"
+        barrier = threading.Barrier(2)
+
+        def fake_curl(_host, _port, url, _timeout, *, auth):
+            self.assertTrue(auth)
+            barrier.wait(timeout=1)
+            latency = 155.0 if "latency" in url else 620.0
+            return True, latency, ""
+
+        instance.proxy_curl = fake_curl
+        minimum, checks, failures = instance.proxy_curl_pair(
+            "127.0.0.1", 10808, 12, auth=True
+        )
+
+        self.assertEqual(minimum, 155.0)
+        self.assertEqual(len(checks), 2)
+        self.assertEqual(failures, [])
+
+    def test_active_probe_accepts_minimum_below_limit(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.auto_check_timeout_seconds = 12
+        instance.auto_check_max_latency_ms = 500
+        instance.health_check_url = "https://health.example/"
+        instance.latency_test_url = "https://latency.example/"
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess()
+            ),
+        }
+
+        def fake_curl(_host, _port, url, _timeout, *, auth):
+            latency = 155.0 if "latency" in url else 620.0
+            return True, latency, ""
+
+        instance.proxy_curl = fake_curl
+        success, latency_ms, checks, error = instance.probe_slot_health("xray-a")
+
+        self.assertTrue(success)
+        self.assertEqual(latency_ms, 155.0)
+        self.assertEqual(len(checks), 2)
+        self.assertEqual(error, "")
+
+    def test_active_probe_rejects_minimum_above_limit(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.auto_check_timeout_seconds = 12
+        instance.auto_check_max_latency_ms = 500
+        instance.health_check_url = "https://health.example/"
+        instance.latency_test_url = "https://latency.example/"
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess()
+            ),
+        }
+
+        def fake_curl(_host, _port, url, _timeout, *, auth):
+            latency = 620.0 if "latency" in url else 710.0
+            return True, latency, ""
+
+        instance.proxy_curl = fake_curl
+        success, latency_ms, checks, error = instance.probe_slot_health("xray-a")
+
+        self.assertFalse(success)
+        self.assertEqual(latency_ms, 620.0)
+        self.assertEqual(len(checks), 2)
+        self.assertIn("limit 500ms", error)
+
+    def test_endpoint_pair_succeeds_when_only_one_address_responds(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.latency_test_url = "https://latency.example/"
+        instance.health_check_url = "https://health.example/"
+
+        def fake_curl(_host, _port, url, _timeout, *, auth):
+            if "latency" in url:
+                return False, None, "timeout"
+            return True, 210.0, ""
+
+        instance.proxy_curl = fake_curl
+        minimum, checks, failures = instance.proxy_curl_pair(
+            "127.0.0.1", 10808, 12, auth=True
+        )
+
+        self.assertEqual(minimum, 210.0)
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(len(failures), 1)
+
+    def test_endpoint_pair_fails_only_when_both_addresses_fail(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.latency_test_url = "https://latency.example/"
+        instance.health_check_url = "https://health.example/"
+        instance.proxy_curl = lambda *_args, **_kwargs: (False, None, "timeout")
+
+        minimum, checks, failures = instance.proxy_curl_pair(
+            "127.0.0.1", 10808, 12, auth=True
+        )
+
+        self.assertIsNone(minimum)
+        self.assertEqual(checks, [])
+        self.assertEqual(len(failures), 2)
+
+    def test_running_full_scan_uses_shared_pair_result(self) -> None:
+        selected = candidate("running", "198.51.100.110")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.latency_test_timeout_seconds = 12
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess(),
+                candidate=selected,
+            ),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
+        }
+        calls: list[tuple[str, int, int, bool]] = []
+
+        def fake_pair(host, port, timeout, *, auth):
+            calls.append((host, port, timeout, auth))
+            return 142.0, [("one", 142.0), ("two", 310.0)], []
+
+        instance.proxy_curl_pair = fake_pair
+        result = instance.test_candidate_for_full_scan(selected)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["latency_ms"], 142)
+        self.assertEqual(calls, [("127.0.0.1", 10808, 12, True)])
+
+    def test_duplicate_probe_urls_receive_cloudflare_fallback(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.latency_test_url = "https://www.gstatic.com/generate_204"
+        instance.health_check_url = "https://www.gstatic.com/generate_204"
+
+        self.assertEqual(
+            instance.validation_urls(),
+            [
+                "https://www.gstatic.com/generate_204",
+                "https://cp.cloudflare.com/generate_204",
+            ],
+        )
+
+    def test_full_scan_schedule_is_independent_from_active_check(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.auto_best_check_interval_seconds = 600
+        instance.state = {
+            "auto_check_last_at": 1_500,
+            "auto_best_check_last_at": 1_000,
+        }
+
+        self.assertFalse(instance.auto_best_check_due(1_599))
+        self.assertTrue(instance.auto_best_check_due(1_600))
+        instance.state["auto_check_last_at"] = 9_999
+        self.assertTrue(instance.auto_best_check_due(1_600))
+
+    def test_emergency_post_switch_watch_force_stops_old_slot_after_two_successes(self) -> None:
+        active = candidate("active", "198.51.100.90")
+        old = candidate("old", "198.51.100.91")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.stop_event = threading.Event()
+        instance.switch_generation = 4
+        instance.active_slot_tag = "xray-b"
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess(),
+                candidate=old, draining=True, drain_connections=7,
+            ),
+            "xray-b": manager.XraySlot(
+                "xray-b", 10809, True, Path("/tmp/b"), process=DummyProcess(),
+                candidate=active,
+            ),
+        }
+        instance.probe_slot_health = lambda _tag: (True, 120.0, [], "")
+        stopped: list[str] = []
+        instance.force_stop_draining_slot = lambda tag="": stopped.append(tag) or tag
+        original_wait = instance.stop_event.wait
+        instance.stop_event.wait = lambda _seconds: False
+        original_monotonic = manager.time.monotonic
+        ticks = iter([0.0, 0.0, 5.0, 5.0, 10.0])
+        manager.time.monotonic = lambda: next(ticks)
+        try:
+            instance.post_switch_watch(4, "xray-b", "xray-a", old, True)
+        finally:
+            manager.time.monotonic = original_monotonic
+            instance.stop_event.wait = original_wait
+
+        self.assertEqual(stopped, ["xray-a"])
 
 
 if __name__ == "__main__":

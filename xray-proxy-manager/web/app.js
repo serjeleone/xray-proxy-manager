@@ -143,6 +143,10 @@ function formatRelative(timestamp) {
   return `${days} дн. назад`;
 }
 
+function formatRelativeShort(timestamp) {
+  return formatRelative(timestamp).replace(/ назад$/, '');
+}
+
 function protocolMeta(item) {
   const endpoint = item.server ? `${item.server}${item.port ? `:${item.port}` : ''}` : 'адрес скрыт в конфигурации';
   return `${endpoint} · ${item.outbound_tag}`;
@@ -245,6 +249,8 @@ function autoCheckerFormValues() {
     auto_switch_best_enabled: $('autoSwitchBestEnabled').checked,
     auto_check_interval_seconds: Number.parseInt($('autoCheckInterval').value, 10),
     auto_check_failures: Number.parseInt($('autoCheckFailures').value, 10),
+    auto_check_max_latency_ms: Number.parseInt($('autoCheckMaxLatency').value, 10),
+    auto_best_check_interval_seconds: Number.parseInt($('autoBestCheckInterval').value, 10),
     auto_switch_excluded_countries: normalizeAutoSwitchExclusions($('autoSwitchExcludedCountries').value),
     auto_switch_min_ping_delta_ms: Number.parseInt($('autoSwitchMinPingDelta').value, 10),
   };
@@ -455,10 +461,13 @@ function renderRuntimeStatus(payload) {
     hint.classList.add('warn');
     return;
   }
-  hint.textContent = `Текущий активный селектор: ${selector.current || '—'}`;
+  const selectorLabel = document.createTextNode('Текущий активный селектор: ');
+  const selectorValue = document.createElement('strong');
+  selectorValue.textContent = selector.current || '—';
+  hint.replaceChildren(selectorLabel, selectorValue);
   if (!selector.connections_supported) {
     $('statusDot').className = 'status-dot warn';
-    hint.textContent += ` · ${selector.error || 'учёт соединений недоступен'}; автоматическое завершение старого слота приостановлено`;
+    hint.append(document.createTextNode(` · ${selector.error || 'учёт соединений недоступен'}; автоматическое завершение старого слота приостановлено`));
     hint.classList.add('warn');
   }
 }
@@ -470,8 +479,10 @@ function initializeSettings(payload) {
   const ui = payload.ui_settings || {};
   $('autoCheckerEnabled').checked = Boolean(checker.enabled);
   $('autoSwitchBestEnabled').checked = Boolean(checker.switch_to_best);
-  $('autoCheckInterval').value = checker.interval_seconds ?? 600;
+  $('autoCheckInterval').value = checker.interval_seconds ?? 60;
   $('autoCheckFailures').value = checker.failure_threshold ?? 3;
+  $('autoCheckMaxLatency').value = checker.max_latency_ms ?? 500;
+  $('autoBestCheckInterval').value = checker.best_check_interval_seconds ?? 600;
   $('autoSwitchExcludedCountries').value = checker.excluded_countries ?? 'RU';
   $('autoSwitchMinPingDelta').value = checker.min_ping_delta_ms ?? 100;
   $('subscriptionUrl').value = subscription.url || '';
@@ -528,19 +539,16 @@ function render(payload) {
 
   const checker = payload.auto_checker || {};
   $('autoCheckerState').textContent = checker.enabled ? 'Включён' : 'Выключен';
-  if (checker.enabled) {
-    const result = checker.last_error
-      ? `Последняя ошибка: ${checker.last_error}`
-      : `Последняя проверка: ${formatRelative(checker.last_check_at)}`;
-    const bestMode = checker.switch_to_best
-      ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · исключения: ${checker.excluded_countries || 'нет'}`
-      : '';
-    $('autoCheckerMeta').textContent = `${checker.interval_seconds} с · порог ${checker.failure_threshold} · ошибок ${checker.current_failures}${bestMode}. ${result}`;
-  } else {
-    $('autoCheckerMeta').textContent = checker.switch_to_best
-      ? 'Авто-чекер выключен; автопереключение начнёт работать после его включения'
-      : 'Автоматическая проверка и переключение отключены';
-  }
+  const slotLastCheck = formatRelativeShort(checker.last_check_at);
+  const fullLastCheck = formatRelativeShort(checker.last_best_check_at);
+  const lastChecksSuffix = checker.last_check_at || checker.last_best_check_at ? ' назад' : '';
+  const lastChecks = `Последняя проверка: ${slotLastCheck}/${fullLastCheck}${lastChecksSuffix}`;
+  const bestMode = checker.switch_to_best
+    ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · исключения: ${checker.excluded_countries || 'нет'}`
+    : ' · автопереключение выключено';
+  const checkerMode = checker.enabled ? '' : ' · авто-чекер выключен';
+  const lastError = checker.last_error ? ` · последняя ошибка: ${checker.last_error}` : '';
+  $('autoCheckerMeta').textContent = `${checker.interval_seconds}/${checker.best_check_interval_seconds} сек. · порог ${checker.failure_threshold} · ошибок ${checker.current_failures}${checkerMode}${bestMode}. ${lastChecks}${lastError}`;
 
   const subscription = payload.subscription || {};
   if (subscription.error) {
@@ -698,7 +706,11 @@ function positionLogFileControls() {
   const measuredGap = wrapRect.top - closeRect.bottom;
   const gap = Math.max(12, Math.min(32, measuredGap > 0 ? measuredGap : 16));
   controls.style.top = `${Math.round(wrapRect.bottom - windowRect.top + gap)}px`;
-  controls.style.right = `${Math.max(12, Math.round(windowRect.right - scrollRect.right))}px`;
+  if (window.matchMedia('(max-width: 470px)').matches) {
+    controls.style.right = getComputedStyle(scrollControls).right;
+  } else {
+    controls.style.right = `${Math.max(12, Math.round(windowRect.right - scrollRect.right))}px`;
+  }
 }
 
 function openLogs(event) {
@@ -997,7 +1009,7 @@ $('copyRouterKey').addEventListener('click', async () => {
 });
 $('saveAutoChecker').addEventListener('click', saveAutoChecker);
 $('saveSubscription').addEventListener('click', saveSubscriptionSettings);
-['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoCheckInterval', 'autoCheckFailures', 'autoSwitchExcludedCountries', 'autoSwitchMinPingDelta'].forEach((id) => {
+['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcludedCountries', 'autoSwitchMinPingDelta'].forEach((id) => {
   $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled'].includes(id) ? 'change' : 'input', updateSaveButtons);
 });
 ['subscriptionUrl', 'subscriptionInterval'].forEach((id) => $(id).addEventListener('input', updateSaveButtons));

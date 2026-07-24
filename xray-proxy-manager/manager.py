@@ -52,8 +52,10 @@ SSH_KEYGEN_BIN = '/usr/bin/ssh-keygen'
 UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
+DEFAULT_LATENCY_TEST_URL = 'https://www.gstatic.com/generate_204'
+DEFAULT_HEALTH_CHECK_URL = 'https://cp.cloudflare.com/generate_204'
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.6.5'
+ADDON_VERSION = '0.6.6'
 
 DIRECT_PROTOCOLS = {'freedom', 'blackhole', 'dns', 'loopback'}
 DIRECT_TAGS = {
@@ -72,6 +74,8 @@ RUNTIME_SETTING_KEYS = {
     'auto_switch_min_ping_delta_ms',
     'auto_check_interval_seconds',
     'auto_check_failures',
+    'auto_check_max_latency_ms',
+    'auto_best_check_interval_seconds',
     'update_interval_hours',
     'ui_sort',
     'ui_protocol_filter',
@@ -484,6 +488,9 @@ class XraySlot:
     drain_udp_connections: int = 0
     drain_bytes: int = 0
     drain_last_error: str = ''
+    drain_degraded_checks: int = 0
+    drain_last_latency_ms: int | None = None
+    drain_last_checked_at: int | None = None
     observed_outbound_tag: str = ''
     observed_outbound_at: int | None = None
 
@@ -547,8 +554,8 @@ class XrayManager:
         self.latency_test_parallelism = max(
             0, min(32, int(self.options.get('latency_test_parallelism', 0) or 0))
         )
-        self.latency_test_url = str(self.options.get('latency_test_url') or 'https://www.gstatic.com/generate_204')
-        self.health_check_url = str(self.options.get('health_check_url') or self.latency_test_url)
+        self.latency_test_url = str(self.options.get('latency_test_url') or DEFAULT_LATENCY_TEST_URL)
+        self.health_check_url = str(self.options.get('health_check_url') or DEFAULT_HEALTH_CHECK_URL)
 
         self.selector_control_enabled = to_bool(self.options.get('selector_control_enabled', False))
         self.selector_api_url = str(
@@ -592,8 +599,10 @@ class XrayManager:
         self.auto_switch_best_enabled = True
         self.auto_switch_excluded_countries = 'RU'
         self.auto_switch_min_ping_delta_ms = 100
-        self.auto_check_interval_seconds = 600
+        self.auto_check_interval_seconds = 60
         self.auto_check_failures = 3
+        self.auto_check_max_latency_ms = 500
+        self.auto_best_check_interval_seconds = 600
         self.auto_check_timeout_seconds = max(3, int(self.options.get('auto_check_timeout_seconds', 12) or 12))
         self.update_interval_hours = 1
         self.ui_sort = 'ping-asc'
@@ -655,6 +664,7 @@ class XrayManager:
             'last_switch_reason': '',
             'auto_check_failures': 0,
             'auto_check_last_at': None,
+            'auto_best_check_last_at': None,
             'auto_check_last_error': '',
             'jobs': {},
         })
@@ -711,10 +721,17 @@ class XrayManager:
             source.get('auto_switch_min_ping_delta_ms', 100), 0, 10000, 'auto_switch_min_ping_delta_ms'
         )
         self.auto_check_interval_seconds = bounded_int(
-            source.get('auto_check_interval_seconds', 600), 10, 86400, 'auto_check_interval_seconds'
+            source.get('auto_check_interval_seconds', 60), 10, 86400, 'auto_check_interval_seconds'
         )
         self.auto_check_failures = bounded_int(
             source.get('auto_check_failures', 3), 1, 100, 'auto_check_failures'
+        )
+        self.auto_check_max_latency_ms = bounded_int(
+            source.get('auto_check_max_latency_ms', 500), 0, 10000, 'auto_check_max_latency_ms'
+        )
+        self.auto_best_check_interval_seconds = bounded_int(
+            source.get('auto_best_check_interval_seconds', 600), 60, 86400,
+            'auto_best_check_interval_seconds',
         )
         self.update_interval_hours = bounded_int(
             source.get('update_interval_hours', 1), 0, 720, 'update_interval_hours'
@@ -749,6 +766,10 @@ class XrayManager:
                 normalized[key] = bounded_int(value, 10, 86400, key)
             elif key == 'auto_check_failures':
                 normalized[key] = bounded_int(value, 1, 100, key)
+            elif key == 'auto_check_max_latency_ms':
+                normalized[key] = bounded_int(value, 0, 10000, key)
+            elif key == 'auto_best_check_interval_seconds':
+                normalized[key] = bounded_int(value, 60, 86400, key)
             elif key == 'update_interval_hours':
                 normalized[key] = bounded_int(value, 0, 720, key)
             elif key == 'ui_max_ping_ms':
@@ -946,6 +967,9 @@ class XrayManager:
                 duplicate.drain_started_at = now_ts()
                 duplicate.drain_zero_since = None
                 duplicate.drain_protect_until = None
+                duplicate.drain_degraded_checks = 0
+                duplicate.drain_last_latency_ms = None
+                duplicate.drain_last_checked_at = None
             self.selector_reconciliation_pending = False
             self.save_state()
         candidate = self.candidate_by_id(current_slot.candidate_id)
@@ -990,6 +1014,9 @@ class XrayManager:
                     current_slot.drain_started_at = None
                     current_slot.drain_zero_since = None
                     current_slot.drain_protect_until = None
+                    current_slot.drain_degraded_checks = 0
+                    current_slot.drain_last_latency_ms = None
+                    current_slot.drain_last_checked_at = None
                     self.switch_generation += 1
                     self.save_state()
                 candidate = self.candidate_by_id(self.active_candidate_id)
@@ -1804,6 +1831,9 @@ class XrayManager:
                 slot.draining = False
                 slot.drain_zero_since = None
                 slot.drain_protect_until = None
+                slot.drain_degraded_checks = 0
+                slot.drain_last_latency_ms = None
+                slot.drain_last_checked_at = None
                 return
             slot.intentional_stop = True
             log(f'stopping xray-core slot {slot_tag}...')
@@ -1824,6 +1854,9 @@ class XrayManager:
             slot.drain_udp_connections = 0
             slot.drain_bytes = 0
             slot.drain_last_error = ''
+            slot.drain_degraded_checks = 0
+            slot.drain_last_latency_ms = None
+            slot.drain_last_checked_at = None
 
     def force_stop_draining_slot(self, slot_tag: str = '') -> str:
         with self.lock:
@@ -1905,35 +1938,129 @@ class XrayManager:
         return 'xray-b' if slot_tag == 'xray-a' else 'xray-a'
 
     def validation_urls(self) -> list[str]:
+        """Return two independent endpoints used by every latency probe.
+
+        The legacy option names are kept for backward compatibility, but both
+        configured URLs now form one common probe pair. Built-in endpoints fill
+        a missing or duplicated value so existing installations that stored the
+        same URL in both fields still receive two independent checks.
+        """
         urls: list[str] = []
         for url in (
-            self.health_check_url,
-            self.latency_test_url,
-            'https://cp.cloudflare.com/generate_204',
+            getattr(self, 'latency_test_url', DEFAULT_LATENCY_TEST_URL),
+            getattr(self, 'health_check_url', DEFAULT_HEALTH_CHECK_URL),
+            DEFAULT_LATENCY_TEST_URL,
+            DEFAULT_HEALTH_CHECK_URL,
         ):
             text = str(url or '').strip()
             if text and text not in urls:
                 urls.append(text)
         return urls[:2]
 
-    def validate_slot(self, slot_tag: str) -> tuple[float, list[tuple[str, float]]]:
+    def proxy_curl_pair(
+        self,
+        host: str,
+        port: int,
+        timeout_seconds: int,
+        *,
+        auth: bool,
+    ) -> tuple[float | None, list[tuple[str, float]], list[tuple[str, str]]]:
+        """Probe both configured endpoints in parallel and return the minimum.
+
+        One successful endpoint is enough for the outbound to be considered
+        reachable. Only when both requests fail is the probe unavailable.
+        """
+        urls = self.validation_urls()
+        if not urls:
+            return None, [], [('', 'no probe URLs are configured')]
+
+        successful: list[tuple[str, float]] = []
+        failed: list[tuple[str, str]] = []
+        order = {url: index for index, url in enumerate(urls)}
+        with ThreadPoolExecutor(
+            max_workers=len(urls),
+            thread_name_prefix='xray-endpoint-probe',
+        ) as executor:
+            futures = {
+                executor.submit(
+                    self.proxy_curl,
+                    host,
+                    port,
+                    url,
+                    timeout_seconds,
+                    auth=auth,
+                ): url
+                for url in urls
+            }
+            for future in as_completed(futures):
+                url = futures[future]
+                try:
+                    success, latency_ms, error = future.result()
+                except Exception as exc:
+                    success, latency_ms, error = False, None, str(exc)
+                if success and latency_ms is not None:
+                    successful.append((url, latency_ms))
+                else:
+                    failed.append((url, error or 'request failed'))
+
+        successful.sort(key=lambda item: order.get(item[0], len(order)))
+        failed.sort(key=lambda item: order.get(item[0], len(order)))
+        minimum = min((latency for _url, latency in successful), default=None)
+        return minimum, successful, failed
+
+    def probe_slot_health(
+        self,
+        slot_tag: str,
+        *,
+        enforce_latency_limit: bool = True,
+    ) -> tuple[bool, float | None, list[tuple[str, float]], str]:
+        slot = self.slots[slot_tag]
+        with self.lock:
+            if not slot.running():
+                return False, None, [], f'{slot_tag} Xray process is not running'
+            port = slot.socks_tcp
+
+        minimum, results, failures = self.proxy_curl_pair(
+            '127.0.0.1',
+            port,
+            self.auto_check_timeout_seconds,
+            auth=True,
+        )
+        if minimum is None:
+            details = '; '.join(f'{url}: {error}' for url, error in failures)
+            return False, None, results, details or 'both probe requests failed'
+
+        if (
+            enforce_latency_limit
+            and self.auto_check_max_latency_ms > 0
+            and minimum > self.auto_check_max_latency_ms
+        ):
+            checks = ', '.join(f'{url}={latency:.0f}ms' for url, latency in results)
+            return (
+                False,
+                minimum,
+                results,
+                f'minimum latency threshold exceeded '
+                f'({checks}; limit {self.auto_check_max_latency_ms}ms)',
+            )
+        return True, minimum, results, ''
+
+    def validate_slot(
+        self,
+        slot_tag: str,
+        *,
+        enforce_latency_limit: bool = True,
+    ) -> tuple[float, list[tuple[str, float]]]:
         slot = self.slots[slot_tag]
         if not self.wait_for_port(slot.socks_tcp, slot.process, timeout=6.0):
             raise RuntimeError(f'{slot_tag} did not open SOCKS port {slot.socks_tcp}')
-        results: list[tuple[str, float]] = []
-        for url in self.validation_urls():
-            success, latency_ms, error = self.proxy_curl(
-                '127.0.0.1',
-                slot.socks_tcp,
-                url,
-                self.auto_check_timeout_seconds,
-                auth=True,
-            )
-            if not success or latency_ms is None:
-                raise RuntimeError(f'{slot_tag} validation failed for {url}: {error}')
-            results.append((url, latency_ms))
-        average = sum(item[1] for item in results) / max(1, len(results))
-        return average, results
+        success, minimum, results, error = self.probe_slot_health(
+            slot_tag,
+            enforce_latency_limit=enforce_latency_limit,
+        )
+        if not success or minimum is None:
+            raise RuntimeError(f'{slot_tag} validation failed: {error}')
+        return minimum, results
 
     def start_initial_candidate(self, candidate: Candidate, reason: str) -> None:
         preferred_slot = self.active_slot_tag
@@ -1960,7 +2087,19 @@ class XrayManager:
         try:
             self.start_slot(self.active_slot_tag, candidate)
             started_slots.append(self.active_slot_tag)
-            average, _checks = self.validate_slot(self.active_slot_tag)
+            minimum, initial_checks = self.validate_slot(
+                self.active_slot_tag,
+                enforce_latency_limit=False,
+            )
+            if (
+                self.auto_check_max_latency_ms > 0
+                and minimum > self.auto_check_max_latency_ms
+            ):
+                log(
+                    f'initial active slot minimum latency {minimum:.0f}ms exceeds '
+                    f'{self.auto_check_max_latency_ms}ms; automatic failover will be attempted',
+                    error=True,
+                )
 
             if self.selector_control_enabled and not selector_known:
                 self.selector_reconciliation_pending = True
@@ -1973,7 +2112,7 @@ class XrayManager:
             self.state['auto_check_last_error'] = ''
             self.latencies[candidate.id] = {
                 'status': 'ok',
-                'latency_ms': int(round(average)),
+                'latency_ms': int(round(minimum)),
                 'checked_at': now_ts(),
                 'error': '',
             }
@@ -1999,6 +2138,7 @@ class XrayManager:
         *,
         force_reload: bool = False,
         preempt_draining: bool = False,
+        emergency_failover: bool = False,
     ) -> None:
         if not self.selector_control_enabled:
             raise RuntimeError('Blue-green переключение требует доступного внешнего selector')
@@ -2074,7 +2214,7 @@ class XrayManager:
             with self.lock:
                 self.state['jobs']['switch']['message'] = f'Проверка {candidate.name}...'
                 self.save_state()
-            average, checks = self.validate_slot(standby_tag)
+            minimum, checks = self.validate_slot(standby_tag)
             log(
                 f'{standby_tag} passed pre-switch validation: ' +
                 ', '.join(f'{url}={latency:.0f}ms' for url, latency in checks)
@@ -2104,6 +2244,9 @@ class XrayManager:
                 standby.drain_started_at = None
                 standby.drain_zero_since = None
                 standby.drain_protect_until = None
+                standby.drain_degraded_checks = 0
+                standby.drain_last_latency_ms = None
+                standby.drain_last_checked_at = None
                 old_slot.draining = old_slot.running()
                 old_slot.drain_started_at = switched_at if old_slot.draining else None
                 old_slot.drain_zero_since = None
@@ -2113,13 +2256,16 @@ class XrayManager:
                 old_slot.drain_connections = 0
                 old_slot.drain_bytes = 0
                 old_slot.drain_last_error = ''
+                old_slot.drain_degraded_checks = 0
+                old_slot.drain_last_latency_ms = None
+                old_slot.drain_last_checked_at = None
                 self.state['last_switch_at'] = switched_at
                 self.state['last_switch_reason'] = reason
                 self.state['auto_check_failures'] = 0
                 self.state['auto_check_last_error'] = ''
                 self.latencies[candidate.id] = {
                     'status': 'ok',
-                    'latency_ms': int(round(average)),
+                    'latency_ms': int(round(minimum)),
                     'checked_at': switched_at,
                     'error': '',
                 }
@@ -2141,6 +2287,7 @@ class XrayManager:
                         standby_tag,
                         old_slot_tag,
                         rollback_candidate,
+                        emergency_failover,
                     ),
                     daemon=True,
                 ).start()
@@ -2176,6 +2323,9 @@ class XrayManager:
                         old_slot.drain_protect_until = (
                             now_ts() + POST_SWITCH_WATCH_SECONDS if old_slot.draining else None
                         )
+                        old_slot.drain_degraded_checks = 0
+                        old_slot.drain_last_latency_ms = None
+                        old_slot.drain_last_checked_at = None
                         self.save_state()
                     log(
                         f'selector rollback to {old_slot_tag} failed after partial switch: '
@@ -2241,6 +2391,9 @@ class XrayManager:
                 rollback_slot.drain_zero_since = None
                 rollback_slot.drain_protect_until = None
                 rollback_slot.drain_last_error = ''
+                rollback_slot.drain_degraded_checks = 0
+                rollback_slot.drain_last_latency_ms = None
+                rollback_slot.drain_last_checked_at = None
 
                 failed_slot.draining = failed_slot.running()
                 failed_slot.drain_started_at = switched_at if failed_slot.draining else None
@@ -2253,6 +2406,9 @@ class XrayManager:
                 failed_slot.drain_udp_connections = 0
                 failed_slot.drain_bytes = 0
                 failed_slot.drain_last_error = ''
+                failed_slot.drain_degraded_checks = 0
+                failed_slot.drain_last_latency_ms = None
+                failed_slot.drain_last_checked_at = None
 
                 self.switch_generation += 1
                 self.state['last_switch_at'] = switched_at
@@ -2297,8 +2453,10 @@ class XrayManager:
         active_slot_tag: str,
         rollback_slot_tag: str,
         rollback_candidate: Candidate,
+        force_disconnect_rollback: bool = False,
     ) -> None:
         failures = 0
+        successes = 0
         deadline = time.monotonic() + POST_SWITCH_WATCH_SECONDS
         while time.monotonic() < deadline and not self.stop_event.wait(5):
             with self.lock:
@@ -2311,14 +2469,41 @@ class XrayManager:
                 else:
                     error = ''
             if not error:
-                success, _latency_ms, error = self.proxy_curl(
-                    '127.0.0.1',
-                    self.slots[active_slot_tag].socks_tcp,
-                    self.health_check_url,
-                    self.auto_check_timeout_seconds,
-                    auth=True,
-                )
-                failures = 0 if success else failures + 1
+                success, _latency_ms, _checks, error = self.probe_slot_health(active_slot_tag)
+                if success:
+                    failures = 0
+                    successes += 1
+                else:
+                    failures += 1
+                    successes = 0
+            else:
+                successes = 0
+
+            if force_disconnect_rollback and successes >= 2:
+                with self.lock:
+                    still_current = (
+                        generation == self.switch_generation
+                        and self.active_slot_tag == active_slot_tag
+                    )
+                    rollback_slot = self.slots[rollback_slot_tag]
+                    can_stop = (
+                        still_current
+                        and rollback_slot.running()
+                        and rollback_slot.draining
+                    )
+                    connections = rollback_slot.drain_connections
+                if can_stop:
+                    log(
+                        f'emergency failover confirmed on {active_slot_tag}; force-stopping '
+                        f'degraded {rollback_slot_tag} with {connections} tracked connections',
+                        error=True,
+                    )
+                    try:
+                        self.force_stop_draining_slot(rollback_slot_tag)
+                    except Exception as exc:
+                        log(f'could not force-stop degraded slot {rollback_slot_tag}: {exc}', error=True)
+                return
+
             if failures < 2:
                 continue
             log(
@@ -2345,6 +2530,7 @@ class XrayManager:
         *,
         force_reload: bool = False,
         preempt_draining: bool = False,
+        emergency_failover: bool = False,
     ) -> None:
         with self.lock:
             active_running = self.slots[self.active_slot_tag].running()
@@ -2356,6 +2542,7 @@ class XrayManager:
             reason,
             force_reload=force_reload,
             preempt_draining=preempt_draining,
+            emergency_failover=emergency_failover,
         )
 
     def local_tcp_connection_count(self, port: int) -> int:
@@ -2760,7 +2947,7 @@ class XrayManager:
                     ok, output = self.xray_test(config_path)
                     if not ok:
                         return {'status': 'error', 'latency_ms': None, 'checked_at': now_ts(), 'error': output[-500:]}
-    
+
                     with log_path.open('w+', encoding='utf-8') as log_file:
                         process = subprocess.Popen(
                             [XRAY_BIN, '-config', str(config_path)],
@@ -2779,20 +2966,22 @@ class XrayManager:
                                     'checked_at': now_ts(),
                                     'error': error_text,
                                 }
-                            success, latency_ms, error_text = self.proxy_curl(
+                            latency_ms, _checks, failures = self.proxy_curl_pair(
                                 '127.0.0.1',
                                 port,
-                                self.latency_test_url,
                                 self.latency_test_timeout_seconds,
                                 auth=False,
                             )
-                            if success and latency_ms is not None:
+                            if latency_ms is not None:
                                 return {
                                     'status': 'ok',
                                     'latency_ms': int(round(latency_ms)),
                                     'checked_at': now_ts(),
                                     'error': '',
                                 }
+                            error_text = '; '.join(
+                                f'{url}: {error}' for url, error in failures
+                            ) or 'both probe requests failed'
                             return {
                                 'status': 'error',
                                 'latency_ms': None,
@@ -2815,6 +3004,49 @@ class XrayManager:
                     }
         finally:
             self.release_test_port(port)
+
+    def test_candidate_for_full_scan(self, candidate: Candidate) -> dict[str, Any]:
+        """Measure an already running candidate through its real slot.
+
+        Other candidates still use isolated temporary Xray processes. This keeps
+        the full-scan list comparable while ensuring active and draining slot
+        values describe the paths that are actually running.
+        """
+        with self.lock:
+            slot = next(
+                (
+                    item for item in self.slots.values()
+                    if item.running() and self.same_outbound(candidate, item.candidate)
+                ),
+                None,
+            )
+            port = slot.socks_tcp if slot is not None else None
+        if port is None:
+            return self.test_candidate(candidate)
+
+        latency_ms, _checks, failures = self.proxy_curl_pair(
+            '127.0.0.1',
+            port,
+            self.latency_test_timeout_seconds,
+            auth=True,
+        )
+        if latency_ms is not None:
+            return {
+                'status': 'ok',
+                'latency_ms': int(round(latency_ms)),
+                'checked_at': now_ts(),
+                'error': '',
+            }
+        error_text = '; '.join(
+            f'{url}: {error}' for url, error in failures
+        ) or 'both probe requests failed'
+        return {
+            'status': 'error',
+            'latency_ms': None,
+            'checked_at': now_ts(),
+            'error': error_text[-500:],
+        }
+
     def latency_job(
         self,
         candidate_ids: list[str] | None = None,
@@ -2848,7 +3080,7 @@ class XrayManager:
                 for candidate in candidates:
                     if self.stop_event.is_set():
                         break
-                    futures[executor.submit(self.test_candidate, candidate)] = candidate
+                    futures[executor.submit(self.test_candidate_for_full_scan, candidate)] = candidate
 
                 for future in as_completed(futures):
                     candidate = futures[future]
@@ -2880,12 +3112,17 @@ class XrayManager:
                         })
                         self.save_state()
 
+            if candidate_ids is None and fresh_results and not self.stop_event.is_set():
+                self.handle_draining_full_scan_results(fresh_results)
+
             if switch_to_best and fresh_results and not self.stop_event.is_set():
                 healthy: list[tuple[int, str, Candidate]] = []
                 for candidate in candidates:
                     result = fresh_results.get(candidate.id) or {}
                     latency_ms = result.get('latency_ms')
                     if result.get('status') != 'ok' or not isinstance(latency_ms, int):
+                        continue
+                    if self.auto_check_max_latency_ms > 0 and latency_ms > self.auto_check_max_latency_ms:
                         continue
                     if self.candidate_is_excluded(candidate):
                         continue
@@ -2945,7 +3182,7 @@ class XrayManager:
                     excluded_text = self.auto_switch_excluded_countries or 'нет'
                     final_message = (
                         'Проверка завершена · подходящие outbound не найдены '
-                        f'(исключения автоматики: {excluded_text})'
+                        f'(исключения выбора: {excluded_text})'
                     )
         except Exception as exc:
             final_message = f'Ошибка проверки: {exc}'
@@ -2953,12 +3190,106 @@ class XrayManager:
         finally:
             with self.lock:
                 self.state['jobs']['latency'].update({'running': False, 'message': final_message})
-                if source in {'manual', 'auto-check', 'startup'}:
-                    # The next periodic interval begins only after the complete
-                    # full-list test and its possible single switch have finished.
-                    self.state['auto_check_last_at'] = now_ts()
+                if candidate_ids is None and source in {'manual', 'auto-best', 'startup'}:
+                    self.state['auto_best_check_last_at'] = now_ts()
                     self.settings_event.set()
                 self.save_state()
+
+    def handle_draining_full_scan_results(
+        self,
+        fresh_results: dict[str, dict[str, Any]],
+    ) -> None:
+        """Stop a stale one-connection drain after repeated bad full scans.
+
+        The same auto_check_failures setting is intentionally used for active-slot
+        failover and for this drain safeguard. Only complete list scans count;
+        single-outbound tests do not alter the counter.
+        """
+        to_stop: list[tuple[str, int, str]] = []
+        with self.lock:
+            for slot_tag in SLOT_TAGS:
+                slot = self.slots[slot_tag]
+                if not slot.running() or not slot.draining:
+                    slot.drain_degraded_checks = 0
+                    slot.drain_last_latency_ms = None
+                    slot.drain_last_checked_at = None
+                    continue
+
+                current_candidate = next(
+                    (
+                        candidate for candidate in self.candidates
+                        if self.same_outbound(candidate, slot.candidate)
+                    ),
+                    None,
+                )
+                if current_candidate is None:
+                    slot.drain_degraded_checks = 0
+                    slot.drain_last_latency_ms = None
+                    slot.drain_last_checked_at = None
+                    continue
+
+                result = fresh_results.get(current_candidate.id)
+                if not isinstance(result, dict):
+                    continue
+
+                checked_at = int(result.get('checked_at') or now_ts())
+                latency_value = result.get('latency_ms')
+                latency_ms = latency_value if isinstance(latency_value, int) else None
+                degraded = result.get('status') != 'ok'
+                if (
+                    not degraded
+                    and latency_ms is not None
+                    and self.auto_check_max_latency_ms > 0
+                    and latency_ms > self.auto_check_max_latency_ms
+                ):
+                    degraded = True
+
+                # Refresh the count after the slot probe has closed so its own
+                # short-lived SOCKS connection cannot mask the last real flow.
+                current_connections = (
+                    self.local_tcp_connection_count(slot.socks_tcp)
+                    + slot.drain_udp_connections
+                )
+                slot.drain_connections = current_connections
+                slot.drain_tcp_connections = max(0, current_connections - slot.drain_udp_connections)
+                slot.drain_last_latency_ms = latency_ms
+                slot.drain_last_checked_at = checked_at
+                if degraded and current_connections == 1:
+                    slot.drain_degraded_checks += 1
+                else:
+                    slot.drain_degraded_checks = 0
+
+                if slot.drain_degraded_checks < self.auto_check_failures:
+                    continue
+
+                if result.get('status') == 'ok' and latency_ms is not None:
+                    reason = (
+                        f'{latency_ms}ms exceeds {self.auto_check_max_latency_ms}ms'
+                    )
+                else:
+                    reason = str(result.get('error') or 'outbound is unavailable')
+                to_stop.append((slot_tag, slot.drain_degraded_checks, reason))
+
+        for slot_tag, failures, reason in to_stop:
+            with self.lock:
+                slot = self.slots[slot_tag]
+                can_stop = (
+                    slot.running()
+                    and slot.draining
+                    and slot.drain_connections == 1
+                    and slot.drain_degraded_checks >= self.auto_check_failures
+                )
+            if not can_stop:
+                continue
+            log(
+                f'{slot_tag} remained degraded for {failures} consecutive full checks '
+                f'with one tracked connection ({reason}); force-stopping drained slot',
+                error=True,
+            )
+            try:
+                self.force_stop_draining_slot(slot_tag)
+            except Exception as exc:
+                log(f'could not stop degraded drained slot {slot_tag}: {exc}', error=True)
 
     def request_latency_test(
         self,
@@ -2988,14 +3319,19 @@ class XrayManager:
             return True
 
     def check_active_tunnel(self) -> tuple[bool, float | None, str]:
-        active_port = self.slots[self.active_slot_tag].socks_tcp
-        return self.proxy_curl(
-            '127.0.0.1',
-            active_port,
-            self.health_check_url,
-            self.auto_check_timeout_seconds,
-            auth=True,
-        )
+        success, maximum, _checks, error = self.probe_slot_health(self.active_slot_tag)
+        return success, maximum, error
+
+    def auto_best_check_due(self, current_time: int | None = None) -> bool:
+        interval = max(60, int(self.auto_best_check_interval_seconds))
+        try:
+            last_check = int(self.state.get('auto_best_check_last_at') or 0)
+        except (TypeError, ValueError):
+            last_check = 0
+        if last_check <= 0:
+            return True
+        now_value = now_ts() if current_time is None else int(current_time)
+        return now_value - last_check >= interval
 
     def excluded_country_codes(self) -> set[str]:
         country_codes, _fragments = parse_auto_switch_exclusions(
@@ -3034,8 +3370,11 @@ class XrayManager:
             if exclude_configured_countries and self.candidate_is_excluded(candidate):
                 continue
             data = self.latencies.get(candidate.id) or {}
-            if data.get('status') == 'ok' and isinstance(data.get('latency_ms'), int):
-                healthy.append((data['latency_ms'], candidate))
+            latency_ms = data.get('latency_ms')
+            if data.get('status') == 'ok' and isinstance(latency_ms, int):
+                if self.auto_check_max_latency_ms > 0 and latency_ms > self.auto_check_max_latency_ms:
+                    continue
+                healthy.append((latency_ms, candidate))
         healthy.sort(key=lambda item: (item[0], item[1].name.casefold()))
         return [item[1] for item in healthy]
 
@@ -3092,13 +3431,6 @@ class XrayManager:
                 continue
             if not self.auto_checker_enabled:
                 continue
-            with self.lock:
-                latency_running = bool(self.state['jobs']['latency'].get('running'))
-            if latency_running:
-                # The startup or manual full-list test will wake this loop after
-                # completion and start a fresh interval from that moment.
-                self.settings_event.wait(1.0)
-                continue
             try:
                 success, latency_ms, error = self.check_active_tunnel()
                 checked_at = now_ts()
@@ -3123,14 +3455,14 @@ class XrayManager:
                         self.save_state()
 
                 if success:
-                    if self.auto_switch_best_enabled:
+                    if self.auto_best_check_due(checked_at):
                         accepted = self.request_latency_test(
                             None,
-                            switch_to_best=True,
-                            source='auto-check',
+                            switch_to_best=self.auto_switch_best_enabled,
+                            source='auto-best',
                         )
                         if not accepted:
-                            log('periodic outbound check skipped because another latency test is running')
+                            log('scheduled full outbound check postponed because another latency test is running')
                     continue
 
                 failures = int(self.state.get('auto_check_failures') or 0)
@@ -3147,8 +3479,17 @@ class XrayManager:
                         error=True,
                     )
                     continue
-                self.restart_xray_for(candidate, f'auto failover after {failures} consecutive errors')
-                log(f'auto-check switched to {candidate.name}', error=True)
+                self.restart_xray_for(
+                    candidate,
+                    f'emergency failover after {failures} consecutive degraded checks',
+                    preempt_draining=True,
+                    emergency_failover=True,
+                )
+                log(
+                    f'auto-check switched to {candidate.name}; old degraded slot will be '
+                    'force-stopped after two successful checks',
+                    error=True,
+                )
             except Exception as exc:
                 log(f'auto-check error: {exc}', error=True)
 
@@ -3346,6 +3687,9 @@ class XrayManager:
                     'drain_udp_connections': slot.drain_udp_connections,
                     'drain_bytes': slot.drain_bytes,
                     'drain_last_error': slot.drain_last_error,
+                    'drain_degraded_checks': slot.drain_degraded_checks,
+                    'drain_last_latency_ms': slot.drain_last_latency_ms,
+                    'drain_last_checked_at': slot.drain_last_checked_at,
                     'observed_outbound_tag': slot.observed_outbound_tag,
                     'observed_outbound_at': slot.observed_outbound_at,
                 }
@@ -3386,8 +3730,11 @@ class XrayManager:
                     'min_ping_delta_ms': self.auto_switch_min_ping_delta_ms,
                     'interval_seconds': self.auto_check_interval_seconds,
                     'failure_threshold': self.auto_check_failures,
+                    'max_latency_ms': self.auto_check_max_latency_ms,
+                    'best_check_interval_seconds': self.auto_best_check_interval_seconds,
                     'current_failures': int(self.state.get('auto_check_failures') or 0),
                     'last_check_at': self.state.get('auto_check_last_at'),
+                    'last_best_check_at': self.state.get('auto_best_check_last_at'),
                     'last_error': self.state.get('auto_check_last_error') or '',
                     'last_switch_at': self.state.get('last_switch_at'),
                     'last_switch_reason': self.state.get('last_switch_reason') or '',
@@ -3407,7 +3754,9 @@ class XrayManager:
                     'drain_timeout_minutes': self.drain_timeout_minutes,
                     'slots': slots_payload,
                 },
-                'latency_test_url': self.latency_test_url,
+                'latency_test_url': getattr(self, 'latency_test_url', DEFAULT_LATENCY_TEST_URL),
+                'health_check_url': getattr(self, 'health_check_url', DEFAULT_HEALTH_CHECK_URL),
+                'probe_urls': self.validation_urls(),
             }
 
     def xray_version(self) -> str:

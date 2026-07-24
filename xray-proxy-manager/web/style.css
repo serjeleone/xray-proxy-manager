@@ -107,8 +107,8 @@ h1 { margin: 5px 0 0; font-size: clamp(1.45rem, 4vw, 2.15rem); letter-spacing: -
   margin: 0;
   width: 100%;
   min-width: 0;
-  font-size: clamp(1.3rem, 3.3vw, 1.88rem);
-  line-height: 1.12;
+  font-size: clamp(1.65rem, 4.2vw, 2.05rem);
+  line-height: 1.06;
   letter-spacing: -.03em;
   overflow-wrap: anywhere;
   max-height: 2.3em;
@@ -491,7 +491,7 @@ body.modal-open { overflow: hidden; }
   .shell { padding: 17px 12px 30px; }
   .hero-card { height: 270px; padding: 18px 17px; gap: 8px; }
   .hero-primary-row { min-height: 72px; }
-  .hero-primary-row h2 { max-height: 3.45em; font-size: clamp(1.2rem, 5vw, 1.62rem); }
+  .hero-primary-row h2 { max-height: 3.45em; font-size: clamp(1.5rem, 5.8vw, 1.72rem); }
   .hero-actions { margin-top: auto; padding-top: 16px; }
   .settings-grid { grid-template-columns: 1fr; }
   .checker-fields { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -515,7 +515,7 @@ body.modal-open { overflow: hidden; }
   .logs-button { justify-content: center; }
   .hero-card { height: 266px; padding: 17px 15px; gap: 7px; }
   .hero-primary-row { min-height: 68px; }
-  .hero-primary-row h2 { max-height: 3.45em; font-size: 1.18rem; line-height: 1.15; }
+  .hero-primary-row h2 { max-height: 2.2em; font-size: 1.48rem; line-height: 1.08; }
   .hero-details { gap: 3px; }
   .hero-actions { gap: 8px; margin-top: auto; padding-top: 15px; }
   .hero-actions .button { min-height: 40px; padding: 0 13px 1px; font-size: .79rem; }
@@ -526,7 +526,7 @@ body.modal-open { overflow: hidden; }
   footer { flex-direction: column; }
   .logs-modal { padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
   .logs-window {
-    --logs-mobile-right-shift: 3px;
+    --logs-mobile-right-shift: 4px;
     border-radius: 18px;
   }
   .logs-header {
@@ -684,7 +684,7 @@ body.modal-open { overflow: hidden; }
   .hero-primary-row { grid-template-columns: 76px minmax(0, 1fr); gap: 16px; min-height: 72px; }
   .traffic-button { width: 68px; height: 68px; }
   .traffic-icon { width: 48px; height: 48px; }
-  .hero-primary-row h2 { font-size: clamp(1.12rem, 4.8vw, 1.5rem); line-height: 1.15; }
+  .hero-primary-row h2 { font-size: clamp(1.5rem, 5.8vw, 1.72rem); line-height: 1.08; }
   .hero-details p { font-size: .76rem; }
 }
 
@@ -693,7 +693,7 @@ body.modal-open { overflow: hidden; }
   .hero-primary-row { grid-template-columns: 70px minmax(0, 1fr); gap: 14px; min-height: 68px; }
   .traffic-button { width: 64px; height: 64px; }
   .traffic-icon { width: 44px; height: 44px; }
-  .hero-primary-row h2 { font-size: 1.08rem; line-height: 1.16; }
+  .hero-primary-row h2 { font-size: 1.48rem; line-height: 1.08; }
   .hero-details { gap: 4px; }
   #activeMeta { font-size: .72rem; line-height: 1.4; }
   .traffic-hint { font-size: .71rem; }
@@ -725,7 +725,7 @@ body.modal-open { overflow: hidden; }
 .logs-file-controls .logs-scroll-button { opacity: .82; }
 
 @media (max-width: 470px) {
-  .hero-primary-row h2 { -webkit-line-clamp: 3; line-clamp: 3; }
+  .hero-primary-row h2 { -webkit-line-clamp: 2; line-clamp: 2; }
   .hero-actions { width: 100%; }
   .hero-stop { margin-left: auto; }
   .outbound-title-row { gap: 7px; }
