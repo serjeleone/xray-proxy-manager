@@ -73,7 +73,7 @@ configuration:
     description: Shared threshold for active-slot emergency failover and for stopping a one-connection draining slot after bad full scans.
   auto_check_max_latency_ms:
     name: Maximum latency, ms
-    description: 0 disables the limit; it is compared with the minimum successful latency from the two parallel requests.
+    description: 0 disables the limit; exceeding it fails the active path and rejects a switch candidate.
   auto_best_check_interval_seconds:
     name: Full check, seconds
     description: Separate interval for scanning all outbounds and updating the shared latency file; best-path selection is controlled separately.
@@ -86,12 +86,12 @@ configuration:
   latency_test_parallelism:
     name: Check parallelism
     description: 0 selects a safe automatic limit; 1–32 sets the maximum concurrent tests.
-  latency_test_url:
-    name: Probe URL 1
-    description: First endpoint in the shared pair; used in parallel with the second endpoint for every slot or outbound check.
-  health_check_url:
-    name: Probe URL 2
-    description: Second independent endpoint in the shared pair; the check result is the minimum successful latency.
+  primary_test_url:
+    name: Primary test URL
+    description: First control endpoint; used in parallel with the secondary URL for every check.
+  secondary_check_url:
+    name: Secondary check URL
+    description: Second independent control endpoint; the fastest successful result is stored.
   selector_control_enabled:
     name: Selector control
     description: Switch an external selector between xray-a and xray-b.

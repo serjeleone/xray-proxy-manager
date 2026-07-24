@@ -1,8 +1,8 @@
 name: Xray Proxy Manager
-version: "0.6.6"
+version: "0.6.7"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
-description: "Управление Xray через два независимых SOCKS5-слота, проверку outbound и безопасное переключение"
+description: "Управление Xray через два независимых SOCKS5-слота, проверка outbound и безопасное переключение"
 url: "https://github.com/serjeleone/xray-proxy-manager"
 arch:
   - aarch64
@@ -41,7 +41,7 @@ options:
   proxy_password: ""
   disable_observatory: true
   log_level: "warning"
-  user_agent: "Xray Proxy Manager Home Assistant App"
+  user_agent: "XPM-HA-App"
   validate_routing_tags: true
   auto_fix_routing_tags: true
   restart_on_runtime_error: true
@@ -57,8 +57,8 @@ options:
   auto_check_timeout_seconds: 12
   latency_test_timeout_seconds: 12
   latency_test_parallelism: 0
-  latency_test_url: "https://www.gstatic.com/generate_204"
-  health_check_url: "https://cp.cloudflare.com/generate_204"
+  primary_test_url: "https://www.gstatic.com/generate_204"
+  secondary_check_url: "https://cp.cloudflare.com/generate_204"
   selector_control_enabled: false
   selector_api_url: "http://192.168.0.1:9090"
   selector_api_secret: ""
@@ -111,8 +111,8 @@ schema:
   auto_check_timeout_seconds: int(3,)
   latency_test_timeout_seconds: int(3,)
   latency_test_parallelism: int(0,32)
-  latency_test_url: str
-  health_check_url: str
+  primary_test_url: str
+  secondary_check_url: str
   selector_control_enabled: bool
   selector_api_url: str
   selector_api_secret: password?

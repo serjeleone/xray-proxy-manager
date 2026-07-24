@@ -52,10 +52,10 @@ SSH_KEYGEN_BIN = '/usr/bin/ssh-keygen'
 UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
-DEFAULT_LATENCY_TEST_URL = 'https://www.gstatic.com/generate_204'
-DEFAULT_HEALTH_CHECK_URL = 'https://cp.cloudflare.com/generate_204'
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.6.6'
+ADDON_VERSION = '0.6.7'
+DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
+DEFAULT_SECONDARY_CHECK_URL = 'https://cp.cloudflare.com/generate_204'
 
 DIRECT_PROTOCOLS = {'freedom', 'blackhole', 'dns', 'loopback'}
 DIRECT_TAGS = {
@@ -138,6 +138,36 @@ COUNTRY_NAME_ALIASES = {
     'япония': 'JP', 'japan': 'JP',
     'сингапур': 'SG', 'singapore': 'SG',
 }
+
+
+def resolve_test_urls(options: dict[str, Any]) -> tuple[str, str]:
+    """Resolve the two probe URLs and migrate legacy option names in memory.
+
+    Old installations may still provide latency_test_url and health_check_url.
+    A duplicated legacy pair (the old defaults were both gstatic) is normalized
+    to the new gstatic + Cloudflare pair so every check really uses two
+    independent endpoints.
+    """
+    primary = str(
+        options.get('primary_test_url')
+        or options.get('latency_test_url')
+        or DEFAULT_PRIMARY_TEST_URL
+    ).strip()
+    secondary = str(
+        options.get('secondary_check_url')
+        or options.get('health_check_url')
+        or DEFAULT_SECONDARY_CHECK_URL
+    ).strip()
+
+    if not primary:
+        primary = DEFAULT_PRIMARY_TEST_URL
+    if not secondary or secondary == primary:
+        secondary = (
+            DEFAULT_SECONDARY_CHECK_URL
+            if primary != DEFAULT_SECONDARY_CHECK_URL
+            else DEFAULT_PRIMARY_TEST_URL
+        )
+    return primary, secondary
 
 
 def normalize_auto_switch_exclusions(value: Any) -> str:
@@ -554,8 +584,9 @@ class XrayManager:
         self.latency_test_parallelism = max(
             0, min(32, int(self.options.get('latency_test_parallelism', 0) or 0))
         )
-        self.latency_test_url = str(self.options.get('latency_test_url') or DEFAULT_LATENCY_TEST_URL)
-        self.health_check_url = str(self.options.get('health_check_url') or DEFAULT_HEALTH_CHECK_URL)
+        self.primary_test_url, self.secondary_check_url = resolve_test_urls(self.options)
+        self.options['primary_test_url'] = self.primary_test_url
+        self.options['secondary_check_url'] = self.secondary_check_url
 
         self.selector_control_enabled = to_bool(self.options.get('selector_control_enabled', False))
         self.selector_api_url = str(
@@ -1553,7 +1584,27 @@ class XrayManager:
         if not self.auto_switch_best_enabled:
             return selected
 
+        allowed = [item for item in self.candidates if not self.candidate_is_excluded(item)]
+        if not allowed:
+            raise RuntimeError(
+                'No proxy outbounds remain after applying configured selection exclusions.'
+            )
+
         healthy = self.sorted_healthy_candidates(exclude_configured_countries=True)
+        if self.candidate_is_excluded(selected):
+            allowed_for_index = [
+                item for item in allowed if item.source_index == self.config_index
+            ]
+            replacement = healthy[0] if healthy else (
+                allowed_for_index[0] if allowed_for_index else allowed[0]
+            )
+            log(
+                f'startup skipped excluded outbound {selected.name} '
+                f'[{selected.outbound_tag}]; selected {replacement.name} '
+                f'[{replacement.outbound_tag}] instead'
+            )
+            selected = replacement
+
         if not healthy:
             return selected
         best = healthy[0]
@@ -1938,60 +1989,34 @@ class XrayManager:
         return 'xray-b' if slot_tag == 'xray-a' else 'xray-a'
 
     def validation_urls(self) -> list[str]:
-        """Return two independent endpoints used by every latency probe.
+        return [self.primary_test_url, self.secondary_check_url]
 
-        The legacy option names are kept for backward compatibility, but both
-        configured URLs now form one common probe pair. Built-in endpoints fill
-        a missing or duplicated value so existing installations that stored the
-        same URL in both fields still receive two independent checks.
-        """
-        urls: list[str] = []
-        for url in (
-            getattr(self, 'latency_test_url', DEFAULT_LATENCY_TEST_URL),
-            getattr(self, 'health_check_url', DEFAULT_HEALTH_CHECK_URL),
-            DEFAULT_LATENCY_TEST_URL,
-            DEFAULT_HEALTH_CHECK_URL,
-        ):
-            text = str(url or '').strip()
-            if text and text not in urls:
-                urls.append(text)
-        return urls[:2]
-
-    def proxy_curl_pair(
+    def probe_proxy_urls(
         self,
         host: str,
         port: int,
         timeout_seconds: int,
         *,
         auth: bool,
-    ) -> tuple[float | None, list[tuple[str, float]], list[tuple[str, str]]]:
-        """Probe both configured endpoints in parallel and return the minimum.
-
-        One successful endpoint is enough for the outbound to be considered
-        reachable. Only when both requests fail is the probe unavailable.
-        """
+    ) -> tuple[bool, float | None, list[tuple[str, float]], str]:
+        """Probe both configured endpoints in parallel and use the fastest success."""
         urls = self.validation_urls()
-        if not urls:
-            return None, [], [('', 'no probe URLs are configured')]
-
         successful: list[tuple[str, float]] = []
-        failed: list[tuple[str, str]] = []
-        order = {url: index for index, url in enumerate(urls)}
+        errors: list[tuple[str, str]] = []
+        futures: dict[Future[tuple[bool, float | None, str]], str] = {}
         with ThreadPoolExecutor(
             max_workers=len(urls),
             thread_name_prefix='xray-endpoint-probe',
         ) as executor:
-            futures = {
-                executor.submit(
+            for url in urls:
+                futures[executor.submit(
                     self.proxy_curl,
                     host,
                     port,
                     url,
                     timeout_seconds,
                     auth=auth,
-                ): url
-                for url in urls
-            }
+                )] = url
             for future in as_completed(futures):
                 url = futures[future]
                 try:
@@ -2001,12 +2026,16 @@ class XrayManager:
                 if success and latency_ms is not None:
                     successful.append((url, latency_ms))
                 else:
-                    failed.append((url, error or 'request failed'))
+                    errors.append((url, error or 'request failed'))
 
+        order = {url: index for index, url in enumerate(urls)}
         successful.sort(key=lambda item: order.get(item[0], len(order)))
-        failed.sort(key=lambda item: order.get(item[0], len(order)))
-        minimum = min((latency for _url, latency in successful), default=None)
-        return minimum, successful, failed
+        errors.sort(key=lambda item: order.get(item[0], len(order)))
+        if not successful:
+            details = '; '.join(f'{url}: {error}' for url, error in errors)
+            return False, None, [], details or 'both test endpoints failed'
+        minimum = min(latency for _url, latency in successful)
+        return True, minimum, successful, ''
 
     def probe_slot_health(
         self,
@@ -2020,16 +2049,14 @@ class XrayManager:
                 return False, None, [], f'{slot_tag} Xray process is not running'
             port = slot.socks_tcp
 
-        minimum, results, failures = self.proxy_curl_pair(
+        success, minimum, results, error = self.probe_proxy_urls(
             '127.0.0.1',
             port,
             self.auto_check_timeout_seconds,
             auth=True,
         )
-        if minimum is None:
-            details = '; '.join(f'{url}: {error}' for url, error in failures)
-            return False, None, results, details or 'both probe requests failed'
-
+        if not success or minimum is None:
+            return False, None, results, error
         if (
             enforce_latency_limit
             and self.auto_check_max_latency_ms > 0
@@ -2040,8 +2067,8 @@ class XrayManager:
                 False,
                 minimum,
                 results,
-                f'minimum latency threshold exceeded '
-                f'({checks}; limit {self.auto_check_max_latency_ms}ms)',
+                f'latency threshold exceeded ({checks}; fastest {minimum:.0f}ms; '
+                f'limit {self.auto_check_max_latency_ms}ms)',
             )
         return True, minimum, results, ''
 
@@ -2087,16 +2114,16 @@ class XrayManager:
         try:
             self.start_slot(self.active_slot_tag, candidate)
             started_slots.append(self.active_slot_tag)
-            minimum, initial_checks = self.validate_slot(
+            initial_latency, initial_checks = self.validate_slot(
                 self.active_slot_tag,
                 enforce_latency_limit=False,
             )
             if (
                 self.auto_check_max_latency_ms > 0
-                and minimum > self.auto_check_max_latency_ms
+                and initial_latency > self.auto_check_max_latency_ms
             ):
                 log(
-                    f'initial active slot minimum latency {minimum:.0f}ms exceeds '
+                    f'initial active slot latency {initial_latency:.0f}ms exceeds '
                     f'{self.auto_check_max_latency_ms}ms; automatic failover will be attempted',
                     error=True,
                 )
@@ -2112,7 +2139,7 @@ class XrayManager:
             self.state['auto_check_last_error'] = ''
             self.latencies[candidate.id] = {
                 'status': 'ok',
-                'latency_ms': int(round(minimum)),
+                'latency_ms': int(round(initial_latency)),
                 'checked_at': now_ts(),
                 'error': '',
             }
@@ -2214,7 +2241,7 @@ class XrayManager:
             with self.lock:
                 self.state['jobs']['switch']['message'] = f'Проверка {candidate.name}...'
                 self.save_state()
-            minimum, checks = self.validate_slot(standby_tag)
+            measured_latency, checks = self.validate_slot(standby_tag)
             log(
                 f'{standby_tag} passed pre-switch validation: ' +
                 ', '.join(f'{url}={latency:.0f}ms' for url, latency in checks)
@@ -2265,7 +2292,7 @@ class XrayManager:
                 self.state['auto_check_last_error'] = ''
                 self.latencies[candidate.id] = {
                     'status': 'ok',
-                    'latency_ms': int(round(minimum)),
+                    'latency_ms': int(round(measured_latency)),
                     'checked_at': switched_at,
                     'error': '',
                 }
@@ -2966,22 +2993,19 @@ class XrayManager:
                                     'checked_at': now_ts(),
                                     'error': error_text,
                                 }
-                            latency_ms, _checks, failures = self.proxy_curl_pair(
+                            success, latency_ms, _checks, error_text = self.probe_proxy_urls(
                                 '127.0.0.1',
                                 port,
                                 self.latency_test_timeout_seconds,
                                 auth=False,
                             )
-                            if latency_ms is not None:
+                            if success and latency_ms is not None:
                                 return {
                                     'status': 'ok',
                                     'latency_ms': int(round(latency_ms)),
                                     'checked_at': now_ts(),
                                     'error': '',
                                 }
-                            error_text = '; '.join(
-                                f'{url}: {error}' for url, error in failures
-                            ) or 'both probe requests failed'
                             return {
                                 'status': 'error',
                                 'latency_ms': None,
@@ -3024,22 +3048,19 @@ class XrayManager:
         if port is None:
             return self.test_candidate(candidate)
 
-        latency_ms, _checks, failures = self.proxy_curl_pair(
+        success, latency_ms, _checks, error_text = self.probe_proxy_urls(
             '127.0.0.1',
             port,
             self.latency_test_timeout_seconds,
             auth=True,
         )
-        if latency_ms is not None:
+        if success and latency_ms is not None:
             return {
                 'status': 'ok',
                 'latency_ms': int(round(latency_ms)),
                 'checked_at': now_ts(),
                 'error': '',
             }
-        error_text = '; '.join(
-            f'{url}: {error}' for url, error in failures
-        ) or 'both probe requests failed'
         return {
             'status': 'error',
             'latency_ms': None,
@@ -3754,9 +3775,8 @@ class XrayManager:
                     'drain_timeout_minutes': self.drain_timeout_minutes,
                     'slots': slots_payload,
                 },
-                'latency_test_url': getattr(self, 'latency_test_url', DEFAULT_LATENCY_TEST_URL),
-                'health_check_url': getattr(self, 'health_check_url', DEFAULT_HEALTH_CHECK_URL),
-                'probe_urls': self.validation_urls(),
+                'primary_test_url': self.primary_test_url,
+                'secondary_check_url': self.secondary_check_url,
             }
 
     def xray_version(self) -> str:

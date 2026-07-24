@@ -113,7 +113,8 @@ class ManagerLogicTests(unittest.TestCase):
         instance.selector_tag = "xray-active"
         instance.drain_quiet_seconds = 30
         instance.drain_timeout_minutes = 0
-        instance.latency_test_url = "https://example.com/"
+        instance.primary_test_url = "https://primary.example/"
+        instance.secondary_check_url = "https://secondary.example/"
         instance._xray_version_cache = "Xray test"
         instance.slots = {
             "xray-a": manager.XraySlot(
@@ -169,7 +170,8 @@ class ManagerLogicTests(unittest.TestCase):
         instance.selector_tag = "xray-active"
         instance.drain_quiet_seconds = 30
         instance.drain_timeout_minutes = 0
-        instance.latency_test_url = "https://example.com/"
+        instance.primary_test_url = "https://primary.example/"
+        instance.secondary_check_url = "https://secondary.example/"
         instance._xray_version_cache = "Xray test"
         instance.slots = {
             "xray-a": manager.XraySlot(
@@ -212,6 +214,51 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertTrue(instance.candidate_is_excluded(country_candidate))
         self.assertTrue(instance.candidate_is_excluded(phrase_candidate))
         self.assertFalse(instance.candidate_is_excluded(short_code_substring))
+
+    def test_legacy_duplicate_test_urls_migrate_to_independent_pair(self) -> None:
+        primary, secondary = manager.resolve_test_urls({
+            "latency_test_url": manager.DEFAULT_PRIMARY_TEST_URL,
+            "health_check_url": manager.DEFAULT_PRIMARY_TEST_URL,
+        })
+        self.assertEqual(primary, manager.DEFAULT_PRIMARY_TEST_URL)
+        self.assertEqual(secondary, manager.DEFAULT_SECONDARY_CHECK_URL)
+
+    def test_new_test_url_names_take_precedence_over_legacy_names(self) -> None:
+        primary, secondary = manager.resolve_test_urls({
+            "primary_test_url": "https://primary.example/",
+            "secondary_check_url": "https://secondary.example/",
+            "latency_test_url": "https://legacy-primary.example/",
+            "health_check_url": "https://legacy-secondary.example/",
+        })
+        self.assertEqual(primary, "https://primary.example/")
+        self.assertEqual(secondary, "https://secondary.example/")
+
+    def test_startup_does_not_restore_excluded_remembered_outbound(self) -> None:
+        excluded = manager.Candidate(
+            **{
+                **candidate("excluded", "198.51.100.53").__dict__,
+                "name": "🇪🇺 🚀Авто | Лучший сервер ⚡⚡",
+            }
+        )
+        allowed = manager.Candidate(
+            **{
+                **candidate("allowed", "198.51.100.54").__dict__,
+                "name": "🇫🇮 Финляндия",
+            }
+        )
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.candidates = [excluded, allowed]
+        instance.state = {"active_candidate_id": excluded.id}
+        instance.config_index = 0
+        instance.auto_switch_best_enabled = True
+        instance.auto_switch_excluded_countries = "RU, Обходы белых списков, Лучший сервер"
+        instance.auto_switch_min_ping_delta_ms = 100
+        instance.auto_check_max_latency_ms = 500
+        instance.latencies = {}
+
+        selected = instance.choose_initial_candidate()
+
+        self.assertEqual(selected.id, allowed.id)
 
     def test_manual_selection_reuses_draining_standby(self) -> None:
         active = candidate("active", "198.51.100.1")
@@ -375,10 +422,6 @@ class ManagerLogicTests(unittest.TestCase):
         instance = manager.XrayManager.__new__(manager.XrayManager)
         instance.lock = threading.RLock()
         instance.candidates = [candidate(f"candidate-{index}", f"198.51.100.{80 + index}") for index in range(6)]
-        instance.slots = {
-            "xray-a": manager.XraySlot("xray-a", 10808, True, Path("/tmp/a")),
-            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
-        }
         instance.latencies = {}
         instance.latency_test_parallelism = 3
         instance.stop_event = threading.Event()
@@ -410,6 +453,8 @@ class ManagerLogicTests(unittest.TestCase):
             }
 
         instance.test_candidate = fake_test
+        instance.test_candidate_for_full_scan = fake_test
+        instance.handle_draining_full_scan_results = lambda _results: None
         before = int(time.time())
         instance.latency_job(None, switch_to_best=False, source="startup")
 
@@ -420,45 +465,24 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertTrue(instance.settings_event.is_set())
 
 
-    def test_endpoint_pair_runs_in_parallel_and_uses_minimum(self) -> None:
-        instance = manager.XrayManager.__new__(manager.XrayManager)
-        instance.latency_test_url = "https://latency.example/"
-        instance.health_check_url = "https://health.example/"
-        barrier = threading.Barrier(2)
-
-        def fake_curl(_host, _port, url, _timeout, *, auth):
-            self.assertTrue(auth)
-            barrier.wait(timeout=1)
-            latency = 155.0 if "latency" in url else 620.0
-            return True, latency, ""
-
-        instance.proxy_curl = fake_curl
-        minimum, checks, failures = instance.proxy_curl_pair(
-            "127.0.0.1", 10808, 12, auth=True
-        )
-
-        self.assertEqual(minimum, 155.0)
-        self.assertEqual(len(checks), 2)
-        self.assertEqual(failures, [])
-
-    def test_active_probe_accepts_minimum_below_limit(self) -> None:
+    def test_active_probe_uses_fastest_successful_endpoint(self) -> None:
         instance = manager.XrayManager.__new__(manager.XrayManager)
         instance.lock = threading.RLock()
         instance.auto_check_timeout_seconds = 12
         instance.auto_check_max_latency_ms = 500
-        instance.health_check_url = "https://health.example/"
-        instance.latency_test_url = "https://latency.example/"
+        instance.primary_test_url = "https://primary.example/"
+        instance.secondary_check_url = "https://secondary.example/"
         instance.slots = {
             "xray-a": manager.XraySlot(
                 "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess()
             ),
         }
+        values = {
+            instance.primary_test_url: (True, 620.0, ""),
+            instance.secondary_check_url: (True, 155.0, ""),
+        }
+        instance.proxy_curl = lambda _host, _port, url, _timeout, **_kwargs: values[url]
 
-        def fake_curl(_host, _port, url, _timeout, *, auth):
-            latency = 155.0 if "latency" in url else 620.0
-            return True, latency, ""
-
-        instance.proxy_curl = fake_curl
         success, latency_ms, checks, error = instance.probe_slot_health("xray-a")
 
         self.assertTrue(success)
@@ -466,101 +490,55 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(len(checks), 2)
         self.assertEqual(error, "")
 
-    def test_active_probe_rejects_minimum_above_limit(self) -> None:
+    def test_active_probe_succeeds_when_only_one_endpoint_is_available(self) -> None:
         instance = manager.XrayManager.__new__(manager.XrayManager)
         instance.lock = threading.RLock()
         instance.auto_check_timeout_seconds = 12
         instance.auto_check_max_latency_ms = 500
-        instance.health_check_url = "https://health.example/"
-        instance.latency_test_url = "https://latency.example/"
+        instance.primary_test_url = "https://primary.example/"
+        instance.secondary_check_url = "https://secondary.example/"
         instance.slots = {
             "xray-a": manager.XraySlot(
                 "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess()
             ),
         }
+        values = {
+            instance.primary_test_url: (False, None, "timeout"),
+            instance.secondary_check_url: (True, 180.0, ""),
+        }
+        instance.proxy_curl = lambda _host, _port, url, _timeout, **_kwargs: values[url]
 
-        def fake_curl(_host, _port, url, _timeout, *, auth):
-            latency = 620.0 if "latency" in url else 710.0
-            return True, latency, ""
+        success, latency_ms, checks, error = instance.probe_slot_health("xray-a")
 
-        instance.proxy_curl = fake_curl
+        self.assertTrue(success)
+        self.assertEqual(latency_ms, 180.0)
+        self.assertEqual(checks, [(instance.secondary_check_url, 180.0)])
+        self.assertEqual(error, "")
+
+    def test_active_probe_rejects_when_fastest_endpoint_exceeds_limit(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.auto_check_timeout_seconds = 12
+        instance.auto_check_max_latency_ms = 500
+        instance.primary_test_url = "https://primary.example/"
+        instance.secondary_check_url = "https://secondary.example/"
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess()
+            ),
+        }
+        values = {
+            instance.primary_test_url: (True, 620.0, ""),
+            instance.secondary_check_url: (True, 710.0, ""),
+        }
+        instance.proxy_curl = lambda _host, _port, url, _timeout, **_kwargs: values[url]
+
         success, latency_ms, checks, error = instance.probe_slot_health("xray-a")
 
         self.assertFalse(success)
         self.assertEqual(latency_ms, 620.0)
         self.assertEqual(len(checks), 2)
         self.assertIn("limit 500ms", error)
-
-    def test_endpoint_pair_succeeds_when_only_one_address_responds(self) -> None:
-        instance = manager.XrayManager.__new__(manager.XrayManager)
-        instance.latency_test_url = "https://latency.example/"
-        instance.health_check_url = "https://health.example/"
-
-        def fake_curl(_host, _port, url, _timeout, *, auth):
-            if "latency" in url:
-                return False, None, "timeout"
-            return True, 210.0, ""
-
-        instance.proxy_curl = fake_curl
-        minimum, checks, failures = instance.proxy_curl_pair(
-            "127.0.0.1", 10808, 12, auth=True
-        )
-
-        self.assertEqual(minimum, 210.0)
-        self.assertEqual(len(checks), 1)
-        self.assertEqual(len(failures), 1)
-
-    def test_endpoint_pair_fails_only_when_both_addresses_fail(self) -> None:
-        instance = manager.XrayManager.__new__(manager.XrayManager)
-        instance.latency_test_url = "https://latency.example/"
-        instance.health_check_url = "https://health.example/"
-        instance.proxy_curl = lambda *_args, **_kwargs: (False, None, "timeout")
-
-        minimum, checks, failures = instance.proxy_curl_pair(
-            "127.0.0.1", 10808, 12, auth=True
-        )
-
-        self.assertIsNone(minimum)
-        self.assertEqual(checks, [])
-        self.assertEqual(len(failures), 2)
-
-    def test_running_full_scan_uses_shared_pair_result(self) -> None:
-        selected = candidate("running", "198.51.100.110")
-        instance = manager.XrayManager.__new__(manager.XrayManager)
-        instance.lock = threading.RLock()
-        instance.latency_test_timeout_seconds = 12
-        instance.slots = {
-            "xray-a": manager.XraySlot(
-                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess(),
-                candidate=selected,
-            ),
-            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
-        }
-        calls: list[tuple[str, int, int, bool]] = []
-
-        def fake_pair(host, port, timeout, *, auth):
-            calls.append((host, port, timeout, auth))
-            return 142.0, [("one", 142.0), ("two", 310.0)], []
-
-        instance.proxy_curl_pair = fake_pair
-        result = instance.test_candidate_for_full_scan(selected)
-
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["latency_ms"], 142)
-        self.assertEqual(calls, [("127.0.0.1", 10808, 12, True)])
-
-    def test_duplicate_probe_urls_receive_cloudflare_fallback(self) -> None:
-        instance = manager.XrayManager.__new__(manager.XrayManager)
-        instance.latency_test_url = "https://www.gstatic.com/generate_204"
-        instance.health_check_url = "https://www.gstatic.com/generate_204"
-
-        self.assertEqual(
-            instance.validation_urls(),
-            [
-                "https://www.gstatic.com/generate_204",
-                "https://cp.cloudflare.com/generate_204",
-            ],
-        )
 
     def test_full_scan_schedule_is_independent_from_active_check(self) -> None:
         instance = manager.XrayManager.__new__(manager.XrayManager)
