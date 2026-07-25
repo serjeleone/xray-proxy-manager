@@ -122,7 +122,7 @@
           </label>
           <label>
             <span>Исключить из выбора</span>
-            <input id="autoSwitchExcludedCountries" type="text" maxlength="512" inputmode="text" autocomplete="off" placeholder="RU, Лучший сервер">
+            <input id="autoSwitchExcluded" type="text" maxlength="512" inputmode="text" autocomplete="off" placeholder="RU, Лучший сервер">
           </label>
           <label>
             <span>Разница по пингу, мс</span>
@@ -151,10 +151,16 @@
           <h3 id="outboundHeading">Доступные outbound</h3>
           <span id="candidateCount" class="muted">0</span>
         </div>
-        <label class="check-control">
-          <input id="hideUnavailable" type="checkbox">
-          <span>Скрыть недоступные</span>
-        </label>
+        <div class="list-heading-controls">
+          <label class="check-control">
+            <input id="hideUnavailable" type="checkbox">
+            <span>Скрыть недоступные</span>
+          </label>
+          <label class="check-control">
+            <input id="hideExcluded" type="checkbox">
+            <span>Скрыть исключенные</span>
+          </label>
+        </div>
       </div>
 
       <div class="filters">

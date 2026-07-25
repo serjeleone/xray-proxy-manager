@@ -223,6 +223,7 @@ function currentUiSettings() {
     protocol_filter: $('protocolFilter').value,
     max_ping_ms: Number.parseInt($('maxPing').value || '0', 10) || 0,
     hide_unavailable: $('hideUnavailable').checked,
+    hide_excluded: $('hideExcluded').checked,
   };
 }
 
@@ -251,7 +252,7 @@ function autoCheckerFormValues() {
     auto_check_failures: Number.parseInt($('autoCheckFailures').value, 10),
     auto_check_max_latency_ms: Number.parseInt($('autoCheckMaxLatency').value, 10),
     auto_best_check_interval_seconds: Number.parseInt($('autoBestCheckInterval').value, 10),
-    auto_switch_excluded_countries: normalizeAutoSwitchExclusions($('autoSwitchExcludedCountries').value),
+    auto_switch_excluded: normalizeAutoSwitchExclusions($('autoSwitchExcluded').value),
     auto_switch_min_ping_delta_ms: Number.parseInt($('autoSwitchMinPingDelta').value, 10),
   };
 }
@@ -279,7 +280,8 @@ function sortedAndFilteredCandidates(items, payload) {
   const protocol = settings.protocol_filter;
   const maxPing = settings.max_ping_ms;
   const filtered = items.filter((item) => {
-    // Working slots remain visible even when a user filter would otherwise hide them.
+    if (settings.hide_excluded && item.excluded) return false;
+    // Other filters do not hide working slots.
     if (candidatePinPriority(item, payload) < 3) return true;
     if (protocol !== 'all' && item.protocol !== protocol) return false;
     if (settings.hide_unavailable && item.latency?.status === 'error') return false;
@@ -483,13 +485,14 @@ function initializeSettings(payload) {
   $('autoCheckFailures').value = checker.failure_threshold ?? 3;
   $('autoCheckMaxLatency').value = checker.max_latency_ms ?? 500;
   $('autoBestCheckInterval').value = checker.best_check_interval_seconds ?? 600;
-  $('autoSwitchExcludedCountries').value = checker.excluded_countries ?? 'RU';
+  $('autoSwitchExcluded').value = checker.excluded ?? 'RU';
   $('autoSwitchMinPingDelta').value = checker.min_ping_delta_ms ?? 100;
   $('subscriptionUrl').value = subscription.url || '';
   $('subscriptionInterval').value = subscription.update_interval_hours ?? 1;
   $('sortSelect').value = ui.sort || 'ping-asc';
   $('maxPing').value = ui.max_ping_ms ?? 1000;
   $('hideUnavailable').checked = Boolean(ui.hide_unavailable);
+  $('hideExcluded').checked = ui.hide_excluded !== false;
   renderProtocols(payload.protocols || []);
   $('protocolFilter').value = ui.protocol_filter || 'all';
   state.savedAutoChecker = autoCheckerFormValues();
@@ -544,7 +547,7 @@ function render(payload) {
   const lastChecksSuffix = checker.last_check_at || checker.last_best_check_at ? ' назад' : '';
   const lastChecks = `Последняя проверка: ${slotLastCheck}/${fullLastCheck}${lastChecksSuffix}`;
   const bestMode = checker.switch_to_best
-    ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · исключения: ${checker.excluded_countries || 'нет'}`
+    ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · исключения: ${checker.excluded || 'нет'}`
     : ' · автопереключение выключено';
   const checkerMode = checker.enabled ? '' : ' · авто-чекер выключен';
   const lastError = checker.last_error ? ` · последняя ошибка: ${checker.last_error}` : '';
@@ -929,7 +932,7 @@ async function saveSettings(changes, successMessage) {
 
 async function saveAutoChecker() {
   const changes = autoCheckerFormValues();
-  $('autoSwitchExcludedCountries').value = changes.auto_switch_excluded_countries;
+  $('autoSwitchExcluded').value = changes.auto_switch_excluded;
   if (await saveSettings(changes, 'Настройки авто-чекера сохранены')) {
     state.savedAutoChecker = { ...changes };
     updateSaveButtons();
@@ -954,6 +957,7 @@ function scheduleFilterSave() {
       ui_protocol_filter: ui.protocol_filter,
       ui_max_ping_ms: ui.max_ping_ms,
       ui_hide_unavailable: ui.hide_unavailable,
+      ui_hide_excluded: ui.hide_excluded,
     }, 'Фильтры сохранены');
   }, 500);
 }
@@ -1009,11 +1013,11 @@ $('copyRouterKey').addEventListener('click', async () => {
 });
 $('saveAutoChecker').addEventListener('click', saveAutoChecker);
 $('saveSubscription').addEventListener('click', saveSubscriptionSettings);
-['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcludedCountries', 'autoSwitchMinPingDelta'].forEach((id) => {
+['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
   $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled'].includes(id) ? 'change' : 'input', updateSaveButtons);
 });
 ['subscriptionUrl', 'subscriptionInterval'].forEach((id) => $(id).addEventListener('input', updateSaveButtons));
-['sortSelect', 'protocolFilter', 'maxPing', 'hideUnavailable'].forEach((id) => {
+['sortSelect', 'protocolFilter', 'maxPing', 'hideUnavailable', 'hideExcluded'].forEach((id) => {
   $(id).addEventListener(id === 'maxPing' ? 'input' : 'change', scheduleFilterSave);
 });
 $('applyRestartButton').addEventListener('click', () => {

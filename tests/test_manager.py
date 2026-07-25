@@ -98,7 +98,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.update_interval_hours = 1
         instance.auto_checker_enabled = True
         instance.auto_switch_best_enabled = True
-        instance.auto_switch_excluded_countries = "RU"
+        instance.auto_switch_excluded = "new-id"
         instance.auto_switch_min_ping_delta_ms = 100
         instance.auto_check_interval_seconds = 60
         instance.auto_check_failures = 2
@@ -108,6 +108,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.ui_protocol_filter = "all"
         instance.ui_max_ping_ms = 1000
         instance.ui_hide_unavailable = False
+        instance.ui_hide_excluded = True
         instance.selector_state = {}
         instance.router_state = {}
         instance.selector_tag = "xray-active"
@@ -137,6 +138,8 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(item["slot_tags"], ["xray-a"])
         self.assertEqual(item["draining_slots"], ["xray-a"])
         self.assertIs(item["draining"], True)
+        self.assertIs(item["excluded"], True)
+        self.assertIs(payload["ui_settings"]["hide_excluded"], True)
 
     def test_status_rebinds_active_slot_before_first_ui_render(self) -> None:
         stale = candidate("old-active-id", "198.51.100.40", fingerprint="stable-active")
@@ -155,7 +158,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.update_interval_hours = 1
         instance.auto_checker_enabled = True
         instance.auto_switch_best_enabled = True
-        instance.auto_switch_excluded_countries = "RU"
+        instance.auto_switch_excluded = "RU"
         instance.auto_switch_min_ping_delta_ms = 100
         instance.auto_check_interval_seconds = 60
         instance.auto_check_failures = 2
@@ -165,6 +168,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.ui_protocol_filter = "all"
         instance.ui_max_ping_ms = 1000
         instance.ui_hide_unavailable = False
+        instance.ui_hide_excluded = True
         instance.selector_state = {}
         instance.router_state = {}
         instance.selector_tag = "xray-active"
@@ -191,6 +195,26 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(instance.state["active_candidate_id"], refreshed.id)
         self.assertIs(instance.slots["xray-a"].candidate, refreshed)
 
+    def test_legacy_exclusion_setting_is_migrated_to_new_name(self) -> None:
+        options = {"auto_switch_excluded_countries": "RU, Лучший сервер"}
+
+        changed = manager.migrate_auto_switch_excluded_option(options)
+
+        self.assertTrue(changed)
+        self.assertEqual(options["auto_switch_excluded"], "RU, Лучший сервер")
+        self.assertNotIn("auto_switch_excluded_countries", options)
+
+    def test_current_exclusion_setting_takes_precedence_during_migration(self) -> None:
+        options = {
+            "auto_switch_excluded": "FI",
+            "auto_switch_excluded_countries": "RU",
+        }
+
+        manager.migrate_auto_switch_excluded_option(options)
+
+        self.assertEqual(options["auto_switch_excluded"], "FI")
+        self.assertNotIn("auto_switch_excluded_countries", options)
+
     def test_auto_switch_exclusions_support_country_codes_and_text_fragments(self) -> None:
         normalized = manager.normalize_auto_switch_exclusions(
             "ru, Лучший  сервер, ЛУЧШИЙ СЕРВЕР"
@@ -198,7 +222,7 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(normalized, "RU, Лучший сервер")
 
         instance = manager.XrayManager.__new__(manager.XrayManager)
-        instance.auto_switch_excluded_countries = normalized
+        instance.auto_switch_excluded = normalized
 
         country_candidate = candidate("country", "198.51.100.50")
         country_candidate = manager.Candidate(
@@ -251,7 +275,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.state = {"active_candidate_id": excluded.id}
         instance.config_index = 0
         instance.auto_switch_best_enabled = True
-        instance.auto_switch_excluded_countries = "RU, Обходы белых списков, Лучший сервер"
+        instance.auto_switch_excluded = "RU, Обходы белых списков, Лучший сервер"
         instance.auto_switch_min_ping_delta_ms = 100
         instance.auto_check_max_latency_ms = 500
         instance.latencies = {}
@@ -342,7 +366,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.state = {"active_candidate_id": remembered.id}
         instance.config_index = 0
         instance.auto_switch_best_enabled = True
-        instance.auto_switch_excluded_countries = "RU, Обходы белых списков"
+        instance.auto_switch_excluded = "RU, Обходы белых списков"
         instance.auto_switch_min_ping_delta_ms = 100
         instance.auto_check_max_latency_ms = 500
         instance.latencies = {
@@ -362,7 +386,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.state = {"active_candidate_id": remembered.id}
         instance.config_index = 0
         instance.auto_switch_best_enabled = True
-        instance.auto_switch_excluded_countries = "RU"
+        instance.auto_switch_excluded = "RU"
         instance.auto_switch_min_ping_delta_ms = 100
         instance.auto_check_max_latency_ms = 500
         instance.latencies = {
@@ -394,7 +418,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.state = {}
         instance.config_index = 2
         instance.auto_switch_best_enabled = True
-        instance.auto_switch_excluded_countries = "RU"
+        instance.auto_switch_excluded = "RU"
         instance.auto_switch_min_ping_delta_ms = 100
         instance.auto_check_max_latency_ms = 500
         instance.latencies = {}

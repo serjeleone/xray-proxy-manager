@@ -53,7 +53,7 @@ UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.6.7'
+ADDON_VERSION = '0.6.8'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_CHECK_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -70,7 +70,7 @@ RUNTIME_SETTING_KEYS = {
     'subscription_url',
     'auto_checker_enabled',
     'auto_switch_best_enabled',
-    'auto_switch_excluded_countries',
+    'auto_switch_excluded',
     'auto_switch_min_ping_delta_ms',
     'auto_check_interval_seconds',
     'auto_check_failures',
@@ -81,7 +81,9 @@ RUNTIME_SETTING_KEYS = {
     'ui_protocol_filter',
     'ui_max_ping_ms',
     'ui_hide_unavailable',
+    'ui_hide_excluded',
 }
+LEGACY_AUTO_SWITCH_EXCLUDED_KEY = 'auto_switch_excluded_countries'
 OUTBOUND_LOG_RE = re.compile(r'\[[^\]\n]*?->\s*([^\]\s]+)\]')
 XRAY_READING_CONFIG_RE = re.compile(r'(Reading config:)\s*&\{Name:([^}\s]+)\s+Format:[^}]+\}')
 SAFE_RULE_RE = re.compile(r'^[A-Za-z0-9_-]+$')
@@ -169,6 +171,17 @@ def resolve_test_urls(options: dict[str, Any]) -> tuple[str, str]:
         )
     return primary, secondary
 
+
+def migrate_auto_switch_excluded_option(options: dict[str, Any]) -> bool:
+    """Move the legacy exclusion key to the current name in place."""
+    changed = False
+    if 'auto_switch_excluded' not in options and LEGACY_AUTO_SWITCH_EXCLUDED_KEY in options:
+        options['auto_switch_excluded'] = options[LEGACY_AUTO_SWITCH_EXCLUDED_KEY]
+        changed = True
+    if LEGACY_AUTO_SWITCH_EXCLUDED_KEY in options:
+        options.pop(LEGACY_AUTO_SWITCH_EXCLUDED_KEY, None)
+        changed = True
+    return changed
 
 def normalize_auto_switch_exclusions(value: Any) -> str:
     result: list[str] = []
@@ -556,6 +569,11 @@ class XrayManager:
             base_options = {}
         if not isinstance(runtime_options, dict):
             runtime_options = {}
+
+        migrate_auto_switch_excluded_option(base_options)
+        if migrate_auto_switch_excluded_option(runtime_options):
+            atomic_write_json(RUNTIME_OPTIONS_PATH, runtime_options)
+
         self.options: dict[str, Any] = copy.deepcopy(base_options)
         for key in RUNTIME_SETTING_KEYS:
             if key in runtime_options:
@@ -628,7 +646,7 @@ class XrayManager:
 
         self.auto_checker_enabled = True
         self.auto_switch_best_enabled = True
-        self.auto_switch_excluded_countries = 'RU'
+        self.auto_switch_excluded = 'RU'
         self.auto_switch_min_ping_delta_ms = 100
         self.auto_check_interval_seconds = 60
         self.auto_check_failures = 3
@@ -640,6 +658,7 @@ class XrayManager:
         self.ui_protocol_filter = 'all'
         self.ui_max_ping_ms = 1000
         self.ui_hide_unavailable = False
+        self.ui_hide_excluded = True
         self._apply_runtime_values(self.options)
 
         if not self.subscription_url:
@@ -745,8 +764,8 @@ class XrayManager:
         self.subscription_url = str(source.get('subscription_url') or '').strip()
         self.auto_checker_enabled = to_bool(source.get('auto_checker_enabled', True))
         self.auto_switch_best_enabled = to_bool(source.get('auto_switch_best_enabled', True))
-        self.auto_switch_excluded_countries = normalize_auto_switch_exclusions(
-            source.get('auto_switch_excluded_countries', 'RU')
+        self.auto_switch_excluded = normalize_auto_switch_exclusions(
+            source.get('auto_switch_excluded', 'RU')
         )
         self.auto_switch_min_ping_delta_ms = bounded_int(
             source.get('auto_switch_min_ping_delta_ms', 100), 0, 10000, 'auto_switch_min_ping_delta_ms'
@@ -775,6 +794,7 @@ class XrayManager:
             self.ui_protocol_filter = 'all'
         self.ui_max_ping_ms = bounded_int(source.get('ui_max_ping_ms', 1000), 0, 10000, 'ui_max_ping_ms')
         self.ui_hide_unavailable = to_bool(source.get('ui_hide_unavailable', False))
+        self.ui_hide_excluded = to_bool(source.get('ui_hide_excluded', True))
 
     def validate_runtime_changes(self, changes: dict[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
@@ -787,9 +807,9 @@ class XrayManager:
                 if not text or parsed.scheme not in {'http', 'https'} or not parsed.netloc or len(text) > 4096:
                     raise ValueError('Ссылка на подписку должна быть корректным HTTP(S)-адресом')
                 normalized[key] = text
-            elif key in {'auto_checker_enabled', 'auto_switch_best_enabled', 'ui_hide_unavailable'}:
+            elif key in {'auto_checker_enabled', 'auto_switch_best_enabled', 'ui_hide_unavailable', 'ui_hide_excluded'}:
                 normalized[key] = to_bool(value)
-            elif key == 'auto_switch_excluded_countries':
+            elif key == 'auto_switch_excluded':
                 normalized[key] = normalize_auto_switch_exclusions(value)
             elif key == 'auto_switch_min_ping_delta_ms':
                 normalized[key] = bounded_int(value, 0, 10000, key)
@@ -821,10 +841,12 @@ class XrayManager:
         normalized = self.validate_runtime_changes(changes)
         with self.lock:
             self.options.update(normalized)
+            self.options.pop(LEGACY_AUTO_SWITCH_EXCLUDED_KEY, None)
             runtime_options = load_json(RUNTIME_OPTIONS_PATH, {})
             if not isinstance(runtime_options, dict):
                 runtime_options = {}
             runtime_options.update(normalized)
+            runtime_options.pop(LEGACY_AUTO_SWITCH_EXCLUDED_KEY, None)
             atomic_write_json(RUNTIME_OPTIONS_PATH, runtime_options)
             self._apply_runtime_values(self.options)
             self.next_update_at = (
@@ -3200,7 +3222,7 @@ class XrayManager:
                                 f'{self.auto_switch_min_ping_delta_ms} мс'
                             )
                 else:
-                    excluded_text = self.auto_switch_excluded_countries or 'нет'
+                    excluded_text = self.auto_switch_excluded or 'нет'
                     final_message = (
                         'Проверка завершена · подходящие outbound не найдены '
                         f'(исключения выбора: {excluded_text})'
@@ -3356,19 +3378,19 @@ class XrayManager:
 
     def excluded_country_codes(self) -> set[str]:
         country_codes, _fragments = parse_auto_switch_exclusions(
-            self.auto_switch_excluded_countries
+            self.auto_switch_excluded
         )
         return country_codes
 
     def excluded_outbound_fragments(self) -> list[str]:
         _country_codes, fragments = parse_auto_switch_exclusions(
-            self.auto_switch_excluded_countries
+            self.auto_switch_excluded
         )
         return fragments
 
     def candidate_is_excluded(self, candidate: Candidate) -> bool:
         country_codes, fragments = parse_auto_switch_exclusions(
-            self.auto_switch_excluded_countries
+            self.auto_switch_excluded
         )
         if candidate.country_code and candidate.country_code in country_codes:
             return True
@@ -3400,7 +3422,7 @@ class XrayManager:
         return [item[1] for item in healthy]
 
     def choose_failover_candidate(self) -> Candidate | None:
-        excluded_text = self.auto_switch_excluded_countries or 'нет'
+        excluded_text = self.auto_switch_excluded or 'нет'
         healthy = self.sorted_healthy_candidates(exclude_configured_countries=True)
         active = self.slots[self.active_slot_tag].candidate or self.candidate_by_id(self.active_candidate_id)
         alternatives = [item for item in healthy if not self.same_outbound(item, active)]
@@ -3493,7 +3515,7 @@ class XrayManager:
 
                 candidate = self.choose_failover_candidate()
                 if candidate is None:
-                    excluded_text = self.auto_switch_excluded_countries or 'нет'
+                    excluded_text = self.auto_switch_excluded or 'нет'
                     log(
                         'auto-check could not find a healthy failover outbound outside configured exclusions: '
                         f'{excluded_text}',
@@ -3673,6 +3695,7 @@ class XrayManager:
                 payload['slot_tags'] = assigned_slots
                 payload['draining_slots'] = draining_slots
                 payload['draining'] = bool(draining_slots)
+                payload['excluded'] = self.candidate_is_excluded(item)
                 candidates.append(payload)
             protocols = sorted({item.protocol for item in self.candidates})
             available_count = sum(
@@ -3747,7 +3770,7 @@ class XrayManager:
                 'auto_checker': {
                     'enabled': self.auto_checker_enabled,
                     'switch_to_best': self.auto_switch_best_enabled,
-                    'excluded_countries': self.auto_switch_excluded_countries,
+                    'excluded': self.auto_switch_excluded,
                     'min_ping_delta_ms': self.auto_switch_min_ping_delta_ms,
                     'interval_seconds': self.auto_check_interval_seconds,
                     'failure_threshold': self.auto_check_failures,
@@ -3765,6 +3788,7 @@ class XrayManager:
                     'protocol_filter': self.ui_protocol_filter,
                     'max_ping_ms': self.ui_max_ping_ms,
                     'hide_unavailable': self.ui_hide_unavailable,
+                    'hide_excluded': self.ui_hide_excluded,
                 },
                 'selector': copy.deepcopy(self.selector_state),
                 'router': copy.deepcopy(self.router_state),

@@ -59,7 +59,7 @@ configuration:
   auto_switch_best_enabled:
     name: Выбирать лучший outbound
     description: После полной проверки переключаться на достаточно более быстрый вариант.
-  auto_switch_excluded_countries:
+  auto_switch_excluded:
     name: Исключить из выбора
     description: ISO-коды стран и фрагменты строк через запятую; исключаются только из автоматического выбора, на ручной выбор не влияют.
   auto_switch_min_ping_delta_ms:
@@ -158,6 +158,9 @@ configuration:
   ui_hide_unavailable:
     name: Скрывать недоступные
     description: Не показывать outbound с неуспешной проверкой.
+  ui_hide_excluded:
+    name: Скрывать исключенные
+    description: Не показывать в списке outbound, совпадающие с настройкой auto_switch_excluded.
 network:
   10808/tcp: SOCKS5 · слот xray-a
   10808/udp: SOCKS5 UDP · слот xray-a
