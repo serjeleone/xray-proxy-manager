@@ -9,6 +9,7 @@ import http.server
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -49,11 +50,12 @@ CURL_BIN = '/usr/bin/curl'
 SSH_BIN = '/usr/bin/ssh'
 SSHPASS_BIN = '/usr/bin/sshpass'
 SSH_KEYGEN_BIN = '/usr/bin/ssh-keygen'
-UI_PORT = 8099
+DEFAULT_UI_PORT = 8099
+WATCHDOG_PORT = 18099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.7.1'
+ADDON_VERSION = '0.7.2'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_TEST_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -96,6 +98,8 @@ RETIRED_OPTION_KEYS = {
     'restart_on_runtime_error',
     'auto_add_proxy_direct',
     'router_xray_host',
+    'socks_udp_a',
+    'socks_udp_b',
 }
 OUTBOUND_LOG_RE = re.compile(r'\[[^\]\n]*?->\s*([^\]\s]+)\]')
 XRAY_READING_CONFIG_RE = re.compile(r'(Reading config:)\s*&\{Name:([^}\s]+)\s+Format:[^}]+\}')
@@ -652,8 +656,12 @@ class XrayManager:
         self.socks_tcp_b = int(
             self.options.get('socks_tcp_b', DEFAULT_SOCKS_TCP_B)
         )
-        self.socks_udp_a = to_bool(self.options.get('socks_udp_a', True))
-        self.socks_udp_b = to_bool(self.options.get('socks_udp_b', True))
+        self.ui_port = bounded_int(
+            self.options.get('ui_port', DEFAULT_UI_PORT), 1, 65535, 'ui_port'
+        )
+        # SOCKS5 UDP relay always uses the same port number as TCP.
+        self.socks_udp_a = True
+        self.socks_udp_b = True
         self.dual_slot_enabled = to_bool(self.options.get('dual_slot_enabled', True))
         self.override_inbounds = True
         self.proxy_username = str(self.options.get('proxy_username') or '')
@@ -749,12 +757,17 @@ class XrayManager:
             raise RuntimeError('router_firewall_rule contains unsupported characters.')
         if self.socks_tcp_b == self.socks_tcp_a:
             raise RuntimeError('socks_tcp_b must differ from socks_tcp_a.')
+        if self.ui_port in {self.socks_tcp_a, self.socks_tcp_b}:
+            raise RuntimeError('ui_port must differ from both SOCKS slot ports.')
+        if self.ui_port == WATCHDOG_PORT:
+            raise RuntimeError(f'ui_port must differ from the reserved watchdog port {WATCHDOG_PORT}.')
 
         self.lock = threading.RLock()
         self.switch_lock = threading.Lock()
         self.router_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.settings_event = threading.Event()
+        self.preferred_country_scan_generation = 0
         self.subscription: list[dict[str, Any]] = []
         self.candidates: list[Candidate] = []
         self.active_candidate_id = ''
@@ -812,7 +825,7 @@ class XrayManager:
             now_ts() + self.update_interval_hours * 3600
             if self.update_interval_hours > 0 else None
         )
-        self.server: socketserver.TCPServer | None = None
+        self.servers: list[socketserver.BaseServer] = []
         self._xray_version_cache = ''
         self.selector_state: dict[str, Any] = {
             'configured': self.selector_control_enabled,
@@ -963,6 +976,144 @@ class XrayManager:
             'supervisor_error': supervisor_error,
         }
 
+    def _deferred_preferred_country_scan(self, country: str, generation: int) -> None:
+        while not self.stop_event.wait(0.5):
+            with self.lock:
+                if (
+                    generation != self.preferred_country_scan_generation
+                    or self.auto_switch_preferred_country != country
+                ):
+                    return
+                running = bool(self.state['jobs']['latency'].get('running'))
+            if running:
+                continue
+            if self.request_latency_test(
+                None,
+                switch_to_best=True,
+                source='preferred-country',
+            ):
+                return
+
+    def set_preferred_country(self, value: Any) -> dict[str, Any]:
+        country = normalize_preferred_country(value)
+        settings_result = self.update_runtime_settings({
+            'auto_switch_preferred_country': country,
+        })
+        with self.lock:
+            self.preferred_country_scan_generation += 1
+            generation = self.preferred_country_scan_generation
+            matching = [
+                candidate
+                for candidate in self.candidates
+                if country
+                and candidate.country_code == country
+                and not self.candidate_is_excluded(candidate)
+            ]
+            matching_candidates = len(matching)
+            cached_healthy: list[tuple[int, str, Candidate]] = []
+            cached_latencies = getattr(self, 'latencies', {})
+            max_latency_ms = int(getattr(self, 'auto_check_max_latency_ms', 0) or 0)
+            for candidate in matching:
+                latency = cached_latencies.get(candidate.id) or {}
+                latency_ms = latency.get('latency_ms')
+                if latency.get('status') != 'ok' or not isinstance(latency_ms, int):
+                    continue
+                if max_latency_ms > 0 and latency_ms > max_latency_ms:
+                    continue
+                cached_healthy.append((latency_ms, candidate.name.casefold(), candidate))
+            cached_healthy.sort(key=lambda item: (item[0], item[1]))
+            immediate_candidate = cached_healthy[0][2] if cached_healthy else None
+            current = self.candidate_by_id(getattr(self, 'active_candidate_id', ''))
+            if hasattr(self, 'slots') and hasattr(self, 'active_slot_tag'):
+                active_slot = self.slots.get(self.active_slot_tag)
+                if active_slot is not None and active_slot.candidate is not None:
+                    current = active_slot.candidate
+
+        if not country:
+            return {
+                **settings_result,
+                'country': '',
+                'switch_started': False,
+                'matching_candidates': 0,
+                'message': 'Приоритет страны отключён',
+            }
+
+        immediate_switched = False
+        immediate_error = ''
+        should_switch_immediately = bool(
+            immediate_candidate is not None
+            and (
+                current is None
+                or current.country_code != country
+            )
+            and not self.same_outbound(current, immediate_candidate)
+        )
+        if should_switch_immediately and immediate_candidate is not None:
+            try:
+                self.restart_xray_for(
+                    immediate_candidate,
+                    f'preferred country {country} selected from UI',
+                    preempt_draining=True,
+                )
+                immediate_switched = True
+            except Exception as exc:
+                immediate_error = str(exc)
+                log(
+                    f'immediate preferred-country switch to {immediate_candidate.name} '
+                    f'failed; continuing with full scan: {exc}',
+                    error=True,
+                )
+
+        switch_started = self.request_latency_test(
+            None,
+            switch_to_best=True,
+            source='preferred-country',
+        )
+        queued = False
+        active_full_switch_scan = False
+        if not switch_started:
+            with self.lock:
+                job = dict(self.state['jobs']['latency'])
+                active_full_switch_scan = bool(
+                    job.get('running')
+                    and job.get('scope') == 'all'
+                    and job.get('switch_to_best')
+                )
+            if not active_full_switch_scan:
+                queued = True
+                threading.Thread(
+                    target=self._deferred_preferred_country_scan,
+                    args=(country, generation),
+                    daemon=True,
+                    name='preferred-country-scan',
+                ).start()
+
+        if immediate_switched and immediate_candidate is not None:
+            message = (
+                f'Активирован {immediate_candidate.name}; запущена полная проверка '
+                f'с приоритетом страны {country}'
+            )
+        elif switch_started:
+            message = f'Запущена проверка outbound с приоритетом страны {country}'
+        elif active_full_switch_scan:
+            message = f'Текущая полная проверка продолжена с приоритетом страны {country}'
+        else:
+            message = f'Проверка с приоритетом страны {country} поставлена в очередь'
+        if immediate_error:
+            message += f'; немедленное переключение не выполнено: {immediate_error}'
+        if matching_candidates == 0:
+            message += '; подходящие серверы этой страны не найдены, будет использован общий список'
+
+        return {
+            **settings_result,
+            'country': country,
+            'switch_started': switch_started or active_full_switch_scan or immediate_switched,
+            'immediate_switched': immediate_switched,
+            'queued': queued,
+            'matching_candidates': matching_candidates,
+            'message': message,
+        }
+
     def set_slot_mode(self, dual_slot_enabled: bool) -> dict[str, Any]:
         desired_mode = bool(dual_slot_enabled)
         with self.lock:
@@ -1064,6 +1215,34 @@ class XrayManager:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             log(f'could not sync UI settings to Supervisor: {exc}', error=True)
             return False, f'{exc}; настройки сохранены локально'
+
+    def detect_ingress_port(self) -> int:
+        """Read the dynamically assigned Home Assistant Ingress port."""
+        token = os.environ.get('SUPERVISOR_TOKEN', '').strip()
+        if not token:
+            raise RuntimeError('SUPERVISOR_TOKEN is unavailable; cannot determine the Ingress port.')
+
+        last_error = 'unknown error'
+        for attempt in range(1, 11):
+            request = urllib.request.Request(
+                'http://supervisor/addons/self/info',
+                headers={'Authorization': f'Bearer {token}'},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode('utf-8') or '{}')
+                data = payload.get('data') if isinstance(payload, dict) else None
+                port = data.get('ingress_port') if isinstance(data, dict) else None
+                port = int(port)
+                if 1 <= port <= 65535:
+                    return port
+                last_error = f'invalid port returned by Supervisor: {port}'
+            except (TypeError, ValueError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+                last_error = str(exc)
+            if attempt < 10:
+                time.sleep(0.5)
+
+        raise RuntimeError(f'could not determine the Home Assistant Ingress port: {last_error}')
 
     def detect_home_assistant_host(self) -> str:
         """Return the Home Assistant host address visible to LAN clients."""
@@ -4175,6 +4354,9 @@ class XrayManager:
                 'progress': 0,
                 'total': total,
                 'message': 'Проверка доступности...',
+                'source': source,
+                'scope': 'all' if candidate_ids is None else 'selected',
+                'switch_to_best': bool(switch_to_best),
             })
             self.save_state()
             threading.Thread(
@@ -4635,6 +4817,7 @@ class XrayManager:
                     'last_switch_reason': self.state.get('last_switch_reason') or '',
                 },
                 'ui_settings': {
+                    'port': getattr(self, 'ui_port', DEFAULT_UI_PORT),
                     'sort': self.ui_sort,
                     'protocol_filter': self.ui_protocol_filter,
                     'max_ping_ms': self.ui_max_ping_ms,
@@ -4740,9 +4923,42 @@ class XrayManager:
         threading.Thread(target=self.router_status_loop, daemon=True).start()
 
         handler_factory = lambda *args, **kwargs: WebHandler(self, *args, **kwargs)
-        self.server = ThreadingHTTPServer(('0.0.0.0', UI_PORT), handler_factory)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        log(f'web UI is listening on 0.0.0.0:{UI_PORT}')
+        ingress_port = self.detect_ingress_port()
+        if ingress_port == WATCHDOG_PORT:
+            raise RuntimeError(
+                f'Home Assistant assigned the reserved watchdog port {WATCHDOG_PORT} to Ingress; '
+                'restart the app so Supervisor assigns another port.'
+            )
+
+        if ingress_port == self.ui_port:
+            ui_server = ThreadingHTTPServer(('0.0.0.0', self.ui_port), handler_factory)
+            self.servers.append(ui_server)
+            threading.Thread(target=ui_server.serve_forever, daemon=True).start()
+            log(
+                f'web UI is listening on 0.0.0.0:{self.ui_port}; '
+                'Home Assistant Ingress uses the same port'
+            )
+        else:
+            ui_server = ThreadingHTTPServer(('127.0.0.1', self.ui_port), handler_factory)
+            self.servers.append(ui_server)
+            threading.Thread(target=ui_server.serve_forever, daemon=True).start()
+
+            ingress_server = ThreadingTCPProxyServer(
+                ('0.0.0.0', ingress_port),
+                target_host='127.0.0.1',
+                target_port=self.ui_port,
+            )
+            self.servers.append(ingress_server)
+            threading.Thread(target=ingress_server.serve_forever, daemon=True).start()
+            log(
+                f'web UI is listening on 127.0.0.1:{self.ui_port}; '
+                f'Home Assistant Ingress proxy is listening on 0.0.0.0:{ingress_port}'
+            )
+
+        watchdog_server = ThreadingHTTPServer(('0.0.0.0', WATCHDOG_PORT), handler_factory)
+        self.servers.append(watchdog_server)
+        threading.Thread(target=watchdog_server.serve_forever, daemon=True).start()
+        log(f'watchdog health endpoint is listening on 0.0.0.0:{WATCHDOG_PORT}')
 
         while not self.stop_event.wait(1):
             pass
@@ -4750,14 +4966,73 @@ class XrayManager:
     def shutdown(self) -> None:
         self.stop_event.set()
         self.settings_event.set()
-        if self.server:
-            self.server.shutdown()
+        for server in list(self.servers):
+            try:
+                server.shutdown()
+                server.server_close()
+            except Exception:
+                pass
+        self.servers.clear()
         self.stop_xray()
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+
+class IngressTCPProxyHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        server = self.server
+        target_host = getattr(server, 'target_host', '127.0.0.1')
+        target_port = int(getattr(server, 'target_port', 0) or 0)
+        try:
+            upstream = socket.create_connection((target_host, target_port), timeout=5)
+        except OSError:
+            return
+
+        with upstream:
+            client = self.request
+            client.setblocking(False)
+            upstream.setblocking(False)
+            sockets = [client, upstream]
+            while True:
+                try:
+                    readable, _, exceptional = select.select(sockets, [], sockets, 1.0)
+                except (OSError, ValueError):
+                    return
+                if exceptional:
+                    return
+                for source in readable:
+                    try:
+                        data = source.recv(65536)
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        return
+                    if not data:
+                        return
+                    target = upstream if source is client else client
+                    try:
+                        target.sendall(data)
+                    except OSError:
+                        return
+
+
+class ThreadingTCPProxyServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        *,
+        target_host: str,
+        target_port: int,
+    ) -> None:
+        self.target_host = target_host
+        self.target_port = target_port
+        super().__init__(server_address, IngressTCPProxyHandler)
 
 
 class WebHandler(http.server.BaseHTTPRequestHandler):
@@ -4769,6 +5044,18 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
+
+    def ingress_client_allowed(self) -> bool:
+        address = str(self.client_address[0] or '')
+        if address.startswith('::ffff:'):
+            address = address[7:]
+        return address in {'172.30.32.2', '127.0.0.1', '::1'}
+
+    def reject_non_ingress_client(self) -> bool:
+        if self.ingress_client_allowed():
+            return False
+        self.send_error(403, 'Web UI is available only through Home Assistant Ingress')
+        return True
 
     def send_json(self, payload: Any, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
@@ -4817,6 +5104,8 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
                 'xray_running': xray_running,
             }, 200 if healthy else 503)
             return
+        if self.reject_non_ingress_client():
+            return
         if path.endswith('/api/status'):
             self.send_json(self.manager.status_payload())
             return
@@ -4847,6 +5136,8 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
         self.send_static('index.html', 'text/html; charset=utf-8')
 
     def do_POST(self) -> None:
+        if self.reject_non_ingress_client():
+            return
         path = urlparse(self.path).path.rstrip('/')
         try:
             payload = self.read_json()
@@ -4868,6 +5159,9 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
                 if not isinstance(desired, bool):
                     raise ValueError('Не указан режим слотов')
                 self.send_json(self.manager.set_slot_mode(desired))
+                return
+            if path.endswith('/api/preferred-country'):
+                self.send_json(self.manager.set_preferred_country(payload.get('country')))
                 return
             if path.endswith('/api/settings'):
                 changes = payload.get('changes') if isinstance(payload.get('changes'), dict) else payload

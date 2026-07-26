@@ -8,6 +8,8 @@ import time
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 MANAGER_PATH = Path(__file__).parents[1] / "xray-proxy-manager" / "manager.py"
 SPEC = importlib.util.spec_from_file_location("xray_proxy_manager_test_module", MANAGER_PATH)
@@ -59,12 +61,12 @@ class ManagerLogicTests(unittest.TestCase):
 
         self.assertFalse(manager.XrayManager.same_outbound(first, second))
 
-    def test_slots_use_independent_ports_and_udp_flags(self) -> None:
+    def test_slots_use_independent_ports_with_udp_always_enabled(self) -> None:
         instance = manager.XrayManager.__new__(manager.XrayManager)
         instance.subscription = [{"outbounds": [{"tag": "proxy", "protocol": "freedom"}]}]
         instance.slots = {
             "xray-a": manager.XraySlot("xray-a", 10808, True, Path("/tmp/a.json")),
-            "xray-b": manager.XraySlot("xray-b", 10809, False, Path("/tmp/b.json")),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b.json")),
         }
         instance.log_level = "warning"
         instance.proxy_username = ""
@@ -91,7 +93,98 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(config_a["inbounds"][0]["port"], 10808)
         self.assertIs(config_a["inbounds"][0]["settings"]["udp"], True)
         self.assertEqual(config_b["inbounds"][0]["port"], 10809)
-        self.assertIs(config_b["inbounds"][0]["settings"]["udp"], False)
+        self.assertIs(config_b["inbounds"][0]["settings"]["udp"], True)
+
+    def test_addon_has_one_tcp_udp_port_setting_per_slot(self) -> None:
+        config_path = Path(__file__).parents[1] / "xray-proxy-manager" / "config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(config["host_network"])
+        self.assertEqual(config["ingress_port"], 0)
+        self.assertEqual(
+            config["watchdog"],
+            f"http://[HOST]:{manager.WATCHDOG_PORT}/api/health",
+        )
+        self.assertNotIn("ports", config)
+        self.assertEqual(config["options"]["ui_port"], manager.DEFAULT_UI_PORT)
+        self.assertEqual(config["schema"]["ui_port"], "port")
+        self.assertEqual(config["options"]["socks_tcp_a"], 10808)
+        self.assertEqual(config["options"]["socks_tcp_b"], 10809)
+        self.assertNotIn("socks_udp_a", config["options"])
+        self.assertNotIn("socks_udp_b", config["options"])
+        self.assertNotIn("socks_udp_a", config["schema"])
+        self.assertNotIn("socks_udp_b", config["schema"])
+
+    def test_preferred_country_change_starts_full_best_scan(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.preferred_country_scan_generation = 0
+        instance.auto_switch_preferred_country = ""
+        nl = manager.Candidate(**{**candidate("nl", "198.51.100.10").__dict__, "country_code": "NL"})
+        de = manager.Candidate(**{**candidate("de", "198.51.100.11").__dict__, "country_code": "DE"})
+        instance.candidates = [nl, de]
+        instance.state = {"jobs": {"latency": {"running": False}}}
+        instance.candidate_is_excluded = lambda _item: False
+        instance.update_runtime_settings = lambda changes: (
+            setattr(instance, "auto_switch_preferred_country", changes["auto_switch_preferred_country"])
+            or {"ok": True, "restart_required": []}
+        )
+        calls = []
+        instance.request_latency_test = lambda ids, switch_to_best=False, source="manual": (
+            calls.append((ids, switch_to_best, source)) or True
+        )
+
+        result = instance.set_preferred_country("nl")
+
+        self.assertEqual(instance.auto_switch_preferred_country, "NL")
+        self.assertEqual(calls, [(None, True, "preferred-country")])
+        self.assertTrue(result["switch_started"])
+        self.assertEqual(result["matching_candidates"], 1)
+
+    def test_preferred_country_change_immediately_switches_to_cached_healthy_candidate(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.preferred_country_scan_generation = 0
+        instance.auto_switch_preferred_country = ""
+        nl = manager.Candidate(**{**candidate("nl", "198.51.100.10").__dict__, "country_code": "NL"})
+        de = manager.Candidate(**{**candidate("de", "198.51.100.11").__dict__, "country_code": "DE"})
+        instance.candidates = [nl, de]
+        instance.active_candidate_id = de.id
+        instance.latencies = {
+            nl.id: {"status": "ok", "latency_ms": 150},
+            de.id: {"status": "ok", "latency_ms": 100},
+        }
+        instance.auto_check_max_latency_ms = 500
+        instance.state = {"jobs": {"latency": {"running": False}}}
+        instance.candidate_is_excluded = lambda _item: False
+        instance.update_runtime_settings = lambda changes: (
+            setattr(instance, "auto_switch_preferred_country", changes["auto_switch_preferred_country"])
+            or {"ok": True, "restart_required": []}
+        )
+        switches = []
+        instance.restart_xray_for = lambda selected, reason, **kwargs: switches.append(
+            (selected.id, reason, kwargs)
+        )
+        scans = []
+        instance.request_latency_test = lambda ids, switch_to_best=False, source="manual": (
+            scans.append((ids, switch_to_best, source)) or True
+        )
+
+        result = instance.set_preferred_country("NL")
+
+        self.assertEqual(switches[0][0], "nl")
+        self.assertTrue(switches[0][2]["preempt_draining"])
+        self.assertEqual(scans, [(None, True, "preferred-country")])
+        self.assertTrue(result["immediate_switched"])
+        self.assertTrue(result["switch_started"])
+
+    def test_web_ui_accepts_only_ingress_and_loopback_clients(self) -> None:
+        handler = manager.WebHandler.__new__(manager.WebHandler)
+        for address in ("172.30.32.2", "127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            handler.client_address = (address, 12345)
+            self.assertTrue(handler.ingress_client_allowed(), address)
+        handler.client_address = ("192.168.0.20", 12345)
+        self.assertFalse(handler.ingress_client_allowed())
 
     def test_draining_badge_is_remapped_after_subscription_refresh(self) -> None:
         stale = candidate("old-id", "198.51.100.20", fingerprint="stable-old")

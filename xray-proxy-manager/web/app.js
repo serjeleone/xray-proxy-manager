@@ -6,12 +6,18 @@ const state = {
   logsOpen: false,
   logsTimer: null,
   logsLines: [],
+  logsRenderedLines: [],
   logsTotal: 0,
+  logsUpdateDeferred: false,
+  logsDeferredStickToBottom: false,
   logSearchQuery: '',
   logSearchIndex: -1,
   logWrapDisabled: true,
   savedAutoChecker: null,
   savedSubscription: null,
+  preferredCountriesSignature: '',
+  preferredCountrySaving: false,
+  statusRefreshDeferred: false,
   changelogOpen: false,
   releaseNotes: [],
 };
@@ -143,6 +149,12 @@ function formatRelative(timestamp) {
   return `${days} дн. назад`;
 }
 
+function formatHostPort(host, port) {
+  const value = String(host || '').trim();
+  const formattedHost = value.includes(':') && !value.startsWith('[') ? `[${value}]` : value;
+  return port ? `${formattedHost}:${port}` : formattedHost;
+}
+
 function protocolMeta(item) {
   const endpoint = item.server ? `${item.server}${item.port ? `:${item.port}` : ''}` : 'адрес скрыт в конфигурации';
   return `${endpoint} · ${item.outbound_tag}`;
@@ -267,22 +279,28 @@ function countryDisplayName(code) {
 function renderPreferredCountries(payload) {
   const select = $('autoSwitchPreferredCountry');
   const checker = payload.auto_checker || {};
-  const current = select.matches(':focus')
-    ? select.value
-    : (checker.preferred_country || select.value || '');
+  const desired = checker.preferred_country || select.value || '';
   const codes = [...new Set(
     (payload.candidates || [])
       .map((item) => String(item.country_code || '').toUpperCase())
       .filter((code) => /^[A-Z]{2}$/.test(code))
-      .concat(/^[A-Z]{2}$/.test(current) ? [current] : [])
+      .concat(/^[A-Z]{2}$/.test(desired) ? [desired] : [])
   )].sort((left, right) => countryDisplayName(left).localeCompare(
     countryDisplayName(right), 'ru', { sensitivity: 'base' }
   ));
-  select.innerHTML = [
-    '<option value="">Без приоритета</option>',
-    ...codes.map((code) => `<option value="${escapeHtml(code)}">${escapeHtml(code)} — ${escapeHtml(countryDisplayName(code))}</option>`),
-  ].join('');
-  select.value = codes.includes(current) ? current : '';
+
+  // Rebuilding a native <select> closes its open menu. Do not touch it while
+  // the user is choosing a country, and do not replace identical options.
+  if (select.matches(':focus')) return;
+  const signature = codes.join('|');
+  if (signature !== state.preferredCountriesSignature) {
+    select.innerHTML = [
+      '<option value="">Без приоритета</option>',
+      ...codes.map((code) => `<option value="${escapeHtml(code)}">${escapeHtml(code)} — ${escapeHtml(countryDisplayName(code))}</option>`),
+    ].join('');
+    state.preferredCountriesSignature = signature;
+  }
+  select.value = codes.includes(desired) ? desired : '';
 }
 
 function subscriptionFormValues() {
@@ -459,13 +477,13 @@ function renderTraffic(payload) {
   if (router.rule_enabled) {
     button.classList.add('enabled');
     button.title = `Отключить правило ${ruleName}`;
-    hint.textContent = `Правило ${ruleName} включено · нажмите кнопку выше, чтобы приостановить.`;
+    hint.textContent = `Правило ${ruleName} включено · Нажмите кнопку выше, чтобы приостановить.`;
   } else {
     button.classList.add('paused');
     button.title = `Включить правило ${ruleName}`;
     $('statusDot').className = 'status-dot warn';
     $('xrayState').textContent = 'Внешнее правило отключено';
-    hint.textContent = `Правило ${ruleName} приостановлено · нажмите кнопку выше, чтобы возобновить.`;
+    hint.textContent = `Правило ${ruleName} приостановлено · Нажмите кнопку выше, чтобы возобновить.`;
     hint.classList.add('warn');
   }
 }
@@ -546,9 +564,13 @@ function render(payload) {
   const blueGreen = payload.blue_green || {};
   const activeSlot = blueGreen.slots?.[blueGreen.active_slot];
   const haHost = payload.home_assistant_host || 'host';
-  const metaParts = activeSlot
-    ? [`IN: SOCKS ${haHost}:${activeSlot.socks_tcp}`, `OUT: ${active?.protocol || '—'}`]
-    : ['Ожидание трафика'];
+  const inboundEndpoint = activeSlot
+    ? `${formatHostPort(haHost, activeSlot.socks_tcp)} (SOCKS)`
+    : 'SOCKS не запущен';
+  const outboundEndpoint = active?.server
+    ? `${formatHostPort(active.server, active.port)} (${String(active.protocol || '—').toUpperCase()})`
+    : 'Outbound не определён';
+  const metaParts = [`${inboundEndpoint} / ${outboundEndpoint}`];
   metaParts.push(blueGreen.mode === 'single' ? 'Однослотовый режим' : 'Двухслотовый режим');
   let activeMeta = metaParts.join(' · ');
   const drainingSlot = Object.values(blueGreen.slots || {}).find((slot) => slot.draining);
@@ -650,6 +672,22 @@ function setLogSearchControls(matchCount) {
     : '0 / 0';
 }
 
+function sameLogLines(left, right) {
+  return left.length === right.length && left.every((line, index) => line === right[index]);
+}
+
+function logSelectionActive() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+  const content = $('logsContent');
+  const nodeInside = (node) => {
+    if (!node) return false;
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    return node === content || Boolean(element && content.contains(element));
+  };
+  return nodeInside(selection.anchorNode) || nodeInside(selection.focusNode);
+}
+
 function renderLogs({ scrollToMatch = false, queryChanged = false } = {}) {
   const content = $('logsContent');
   const query = $('logsSearchInput').value.trim();
@@ -659,6 +697,7 @@ function renderLogs({ scrollToMatch = false, queryChanged = false } = {}) {
     state.logSearchQuery = '';
     state.logSearchIndex = -1;
     content.textContent = plainText;
+    state.logsRenderedLines = [...state.logsLines];
     setLogSearchControls(0);
     return;
   }
@@ -683,6 +722,7 @@ function renderLogs({ scrollToMatch = false, queryChanged = false } = {}) {
   });
 
   state.logSearchQuery = query;
+  state.logsRenderedLines = [...state.logsLines];
   if (matchNumber === 0) {
     state.logSearchIndex = -1;
     content.innerHTML = renderedLines.length ? renderedLines.join('\n') : escapeHtml(plainText);
@@ -699,6 +739,38 @@ function renderLogs({ scrollToMatch = false, queryChanged = false } = {}) {
   selected?.classList.add('current');
   setLogSearchControls(matchNumber);
   if (scrollToMatch) selected?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function commitLogRender({ forceFull = false, stickToBottom = false } = {}) {
+  if (logSelectionActive()) {
+    state.logsUpdateDeferred = true;
+    state.logsDeferredStickToBottom = state.logsDeferredStickToBottom || stickToBottom;
+    return false;
+  }
+
+  const content = $('logsContent');
+  const query = $('logsSearchInput').value.trim();
+  const prefixMatches = state.logsRenderedLines.length > 0
+    && state.logsRenderedLines.length <= state.logsLines.length
+    && state.logsRenderedLines.every((line, index) => line === state.logsLines[index]);
+
+  if (!forceFull && !query && prefixMatches) {
+    const suffix = state.logsLines.slice(state.logsRenderedLines.length);
+    if (suffix.length) {
+      content.append(document.createTextNode(`\n${suffix.join('\n')}`));
+      state.logsRenderedLines = [...state.logsLines];
+      state.logSearchQuery = '';
+      state.logSearchIndex = -1;
+      setLogSearchControls(0);
+    }
+  } else {
+    renderLogs();
+  }
+
+  if (stickToBottom && !query) content.scrollTop = content.scrollHeight;
+  state.logsUpdateDeferred = false;
+  state.logsDeferredStickToBottom = false;
+  return true;
 }
 
 function moveLogSearch(direction) {
@@ -719,15 +791,26 @@ async function fetchLogs(forceScroll = false) {
     const response = await fetch(api('api/logs?limit=2500'), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    state.logsLines = Array.isArray(payload.lines) ? payload.lines.map((line) => String(line)) : [];
+    const nextLines = Array.isArray(payload.lines) ? payload.lines.map((line) => String(line)) : [];
+    const changed = !sameLogLines(state.logsLines, nextLines);
+    state.logsLines = nextLines;
     state.logsTotal = Number(payload.total) || state.logsLines.length;
-    renderLogs();
     $('logsMeta').textContent = `Показано строк: ${state.logsLines.length}${state.logsTotal > state.logsLines.length ? ` из ${state.logsTotal}` : ''}`;
-    if (!state.logSearchQuery && (forceScroll || wasNearBottom)) content.scrollTop = content.scrollHeight;
+    if (changed || forceScroll || !state.logsRenderedLines.length) {
+      commitLogRender({
+        forceFull: forceScroll || Boolean($('logsSearchInput').value.trim()),
+        stickToBottom: forceScroll || wasNearBottom,
+      });
+    }
   } catch (error) {
-    state.logsLines = [];
-    content.textContent = `Не удалось загрузить логи: ${error.message}`;
     $('logsMeta').textContent = 'Ошибка загрузки';
+    if (logSelectionActive()) {
+      state.logsUpdateDeferred = true;
+      return;
+    }
+    state.logsLines = [];
+    state.logsRenderedLines = [];
+    content.textContent = `Не удалось загрузить логи: ${error.message}`;
     setLogSearchControls(0);
   }
 }
@@ -775,6 +858,7 @@ function closeLogs() {
   document.body.classList.remove('modal-open');
   window.clearInterval(state.logsTimer);
   state.logsTimer = null;
+  fetchStatus(true);
 }
 
 function scrollLogsToStart() {
@@ -822,11 +906,20 @@ function toggleChangelog(event) {
   else openChangelog();
 }
 
-async function fetchStatus() {
+function statusRefreshPaused() {
+  return state.logsOpen || state.preferredCountrySaving || $('autoSwitchPreferredCountry').matches(':focus');
+}
+
+async function fetchStatus(force = false) {
+  if (!force && statusRefreshPaused()) {
+    state.statusRefreshDeferred = true;
+    return;
+  }
   try {
     const response = await fetch(api('api/status'), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
+    state.statusRefreshDeferred = false;
   } catch (error) {
     $('statusDot').className = 'status-dot bad';
     $('xrayState').textContent = 'Интерфейс недоступен';
@@ -986,6 +1079,33 @@ async function saveSettings(changes, successMessage) {
   }
 }
 
+async function changePreferredCountry() {
+  const select = $('autoSwitchPreferredCountry');
+  const country = select.value;
+  select.disabled = true;
+  state.preferredCountrySaving = true;
+  updateSaveButtons();
+  try {
+    const result = await post('api/preferred-country', { country });
+    if (state.savedAutoChecker) {
+      state.savedAutoChecker = {
+        ...state.savedAutoChecker,
+        auto_switch_preferred_country: country,
+      };
+    }
+    updateSaveButtons();
+    toast(result.message || (country ? `Установлен приоритет страны ${country}` : 'Приоритет страны отключён'));
+    await fetchStatus(true);
+  } catch (error) {
+    toast(`Ошибка выбора страны: ${error.message}`, true);
+    await fetchStatus(true);
+  } finally {
+    state.preferredCountrySaving = false;
+    select.disabled = false;
+    if (state.statusRefreshDeferred && !select.matches(':focus')) fetchStatus(true);
+  }
+}
+
 async function saveAutoChecker() {
   const changes = autoCheckerFormValues();
   $('autoSwitchExcluded').value = changes.auto_switch_excluded;
@@ -1036,6 +1156,13 @@ $('logsSearchInput').addEventListener('keydown', (event) => {
   event.preventDefault();
   moveLogSearch(event.shiftKey ? -1 : 1);
 });
+document.addEventListener('selectionchange', () => {
+  if (!state.logsOpen || !state.logsUpdateDeferred || logSelectionActive()) return;
+  window.requestAnimationFrame(() => {
+    if (!state.logsOpen || logSelectionActive()) return;
+    commitLogRender({ stickToBottom: state.logsDeferredStickToBottom });
+  });
+});
 document.addEventListener('click', (event) => {
   if (!state.changelogOpen) return;
   const target = event.target instanceof Element ? event.target : null;
@@ -1070,8 +1197,12 @@ $('copyRouterKey').addEventListener('click', async () => {
 });
 $('saveAutoChecker').addEventListener('click', saveAutoChecker);
 $('saveSubscription').addEventListener('click', saveSubscriptionSettings);
-['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoSwitchPreferredCountry', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
-  $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoSwitchPreferredCountry'].includes(id) ? 'change' : 'input', updateSaveButtons);
+['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
+  $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled'].includes(id) ? 'change' : 'input', updateSaveButtons);
+});
+$('autoSwitchPreferredCountry').addEventListener('change', changePreferredCountry);
+$('autoSwitchPreferredCountry').addEventListener('blur', () => {
+  if (state.statusRefreshDeferred && !state.preferredCountrySaving) fetchStatus(true);
 });
 ['subscriptionUrl', 'subscriptionInterval'].forEach((id) => $(id).addEventListener('input', updateSaveButtons));
 ['sortSelect', 'protocolFilter', 'maxPing', 'hideUnavailable', 'hideExcluded'].forEach((id) => {

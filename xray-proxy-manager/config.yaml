@@ -1,5 +1,5 @@
 name: Xray Proxy Manager
-version: "0.7.1"
+version: "0.7.2"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
 description: "Управление Xray через один или два SOCKS5-слота, проверка outbound и безопасное переключение"
@@ -10,23 +10,18 @@ arch:
 startup: services
 boot: auto
 init: false
-host_network: false
+host_network: true
 ingress: true
-ingress_port: 8099
+ingress_port: 0
 panel_icon: mdi:server-network
 panel_title: Xray Proxy Manager
 panel_admin: true
 hassio_api: true
 hassio_role: default
-watchdog: "http://[HOST]:[PORT:8099]/api/health"
+watchdog: "http://[HOST]:18099/api/health"
 backup: hot
 map:
   - app_config:rw
-ports:
-  10808/tcp: 10808
-  10808/udp: 10808
-  10809/tcp: 10809
-  10809/udp: 10809
 options:
   subscription_url: ""
   config_index: 0
@@ -35,9 +30,7 @@ options:
 
   dual_slot_enabled: true
   socks_tcp_a: 10808
-  socks_udp_a: true
   socks_tcp_b: 10809
-  socks_udp_b: true
   proxy_username: ""
   proxy_password: ""
   log_level: "warning"
@@ -57,6 +50,7 @@ options:
   primary_test_url: "https://www.gstatic.com/generate_204"
   secondary_test_url: "https://cp.cloudflare.com/generate_204"
 
+  ui_port: 8099
   ui_sort: "ping-asc"
   ui_protocol_filter: "all"
   ui_max_ping_ms: 1000
@@ -90,9 +84,7 @@ schema:
 
   dual_slot_enabled: bool
   socks_tcp_a: port
-  socks_udp_a: bool
   socks_tcp_b: port
-  socks_udp_b: bool
   proxy_username: str?
   proxy_password: password?
   log_level: list(debug|info|warning|error|none)
@@ -112,6 +104,7 @@ schema:
   primary_test_url: str
   secondary_test_url: str
 
+  ui_port: port
   ui_sort: list(name-asc|name-desc|ping-asc|ping-desc|protocol-asc|protocol-desc)
   ui_protocol_filter: str
   ui_max_ping_ms: int(0,10000)

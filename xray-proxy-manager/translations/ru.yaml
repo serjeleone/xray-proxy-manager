@@ -10,16 +10,10 @@ configuration:
     description: Интервал загрузки подписки; 0 отключает расписание.
   socks_tcp_a:
     name: SOCKS-порт слота A
-    description: TCP-порт SOCKS5 для xray-a; UDP использует тот же номер.
+    description: Порт SOCKS5 для xray-a; используется единый номер порта для TCP- и UDP-трафика.
   socks_tcp_b:
     name: SOCKS-порт слота B
-    description: TCP-порт SOCKS5 для xray-b; UDP использует тот же номер.
-  socks_udp_a:
-    name: UDP в слоте A
-    description: Разрешить SOCKS5 UDP relay для xray-a.
-  socks_udp_b:
-    name: UDP в слоте B
-    description: Разрешить SOCKS5 UDP relay для xray-b.
+    description: Порт SOCKS5 для xray-b; используется единый номер порта  для TCP- и UDP-трафика.
   dual_slot_enabled:
     name: Двухслотовая схема
     description: Включено — плавное blue-green переключение через A/B; выключено — используется только xray-a с кратким разрывом всех соединений при смене outbound.
@@ -58,7 +52,7 @@ configuration:
     description: "Общий порог последовательных неудач: для аварийного failover активного слота и для остановки дренируемого слота с одним соединением после полных проверок."
   auto_check_max_latency_ms:
     name: Макс. задержка, мс
-    description: 0 отключает лимит; превышение считается ошибкой активного пути и запрещает переключение на кандидат.
+    description: 0 отключает лимит; превышение считается ошибкой активного пути и запрещает переключение на кандидата.
   auto_best_check_interval_seconds:
     name: Полная проверка, секунд
     description: Отдельный интервал проверки всех outbound и обновления общего файла задержек; выбор лучшего варианта зависит от отдельного переключателя.
@@ -121,7 +115,7 @@ configuration:
     description: Имя приватного ключа в каталоге /config/ssh.
   router_ssh_key_path:
     name: Путь к SSH-ключу
-    description: Необязательный путь относительно каталога конфигурации приложения.
+    description: Необязательный абсолютный путь к приватному SSH-ключу внутри контейнера приложения.
   router_ssh_password:
     name: SSH-пароль
     description: Пароль для метода password.
@@ -131,6 +125,9 @@ configuration:
   router_status_interval_seconds:
     name: Опрос OpenWrt, с
     description: Интервал проверки UCI-правила; если sing-box или firewall изменил его состояние, выбранное в UI состояние восстанавливается автоматически.
+  ui_port:
+    name: Порт веб-интерфейса
+    description: Порт веб-интерфейса приложения; изменение применяется после перезапуска.
   ui_sort:
     name: Сортировка списка
     description: Начальный порядок outbound в веб-интерфейсе.
@@ -138,7 +135,7 @@ configuration:
     name: Фильтр протокола
     description: Начальный фильтр протокола; all показывает все.
   ui_max_ping_ms:
-    name: Максимальный пинг UI, мс
+    name: Фильтр по максимальному пингу, мс
     description: Скрывать в интерфейсе результаты выше заданного значения; 0 отключает.
   ui_hide_unavailable:
     name: Скрывать недоступные
@@ -146,8 +143,3 @@ configuration:
   ui_hide_excluded:
     name: Скрывать исключенные
     description: Не показывать в списке outbound, совпадающие с настройкой auto_switch_excluded.
-network:
-  10808/tcp: SOCKS5 · слот xray-a
-  10808/udp: SOCKS5 UDP · слот xray-a
-  10809/tcp: SOCKS5 · слот xray-b
-  10809/udp: SOCKS5 UDP · слот xray-b

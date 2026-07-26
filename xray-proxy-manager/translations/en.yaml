@@ -1,28 +1,22 @@
 configuration:
   subscription_url:
     name: Subscription URL
-    description: JSON subscription URL containing Xray configurations.
+    description: URL of the JSON subscription containing Xray configurations.
   config_index:
     name: Fallback configuration index
-    description: Root configuration index used when no remembered outbound or cached latency is available.
+    description: Root index used at startup when there is no remembered outbound or saved latency data.
   update_interval_hours:
     name: Subscription update, hours
-    description: Subscription refresh interval; 0 disables scheduled updates.
+    description: Subscription download interval; 0 disables scheduled updates.
   socks_tcp_a:
     name: Slot A SOCKS port
-    description: SOCKS5 TCP port for xray-a; UDP uses the same port number.
+    description: SOCKS5 port for xray-a; the same port number is used for TCP and UDP traffic.
   socks_tcp_b:
     name: Slot B SOCKS port
-    description: SOCKS5 TCP port for xray-b; UDP uses the same port number.
-  socks_udp_a:
-    name: Slot A UDP
-    description: Enable SOCKS5 UDP relay for xray-a.
-  socks_udp_b:
-    name: Slot B UDP
-    description: Enable SOCKS5 UDP relay for xray-b.
+    description: SOCKS5 port for xray-b; the same port number is used for TCP and UDP traffic.
   dual_slot_enabled:
     name: Dual-slot mode
-    description: Enabled uses blue-green A/B switching; disabled uses xray-a only and briefly drops all connections when changing outbound.
+    description: Enabled — smooth blue-green switching through A/B; disabled — only xray-a is used, with a brief interruption of all connections when changing outbound.
   proxy_username:
     name: SOCKS5 username
     description: Optional username; must be set together with the password.
@@ -31,52 +25,52 @@ configuration:
     description: Optional password; must be set together with the username.
   log_level:
     name: Xray log level
-    description: Logging verbosity of Xray processes.
+    description: Logging verbosity of the Xray process.
   user_agent:
     name: Subscription User-Agent
-    description: User-Agent header used to download the subscription.
+    description: User-Agent header used when downloading the subscription.
   auto_checker_enabled:
     name: Automatic checks
-    description: Run a background full check at startup and later on schedule.
+    description: Run a background check at startup and then on schedule.
   auto_switch_best_enabled:
     name: Select best outbound
-    description: Switch to a sufficiently faster outbound after a full check.
+    description: After a full check, switch to a sufficiently faster option.
   auto_switch_preferred_country:
     name: Preferred country
-    description: ISO country code prioritized for best-outbound selection; all countries are used when no preferred-country candidate meets the limits.
+    description: ISO country code prioritized when selecting the best outbound; if no suitable servers from that country are available, all other servers are considered.
   auto_switch_excluded:
     name: Exclude from selection
-    description: Comma-separated ISO country codes and text fragments always excluded from automatic selection. Disable “Hide excluded” in the UI to select one manually.
+    description: Comma-separated ISO country codes and text fragments; always excluded from automatic selection. To manually select a hidden outbound, clear the “Hide excluded” checkbox in the UI.
   auto_switch_min_ping_delta_ms:
     name: Minimum difference, ms
-    description: Minimum latency improvement required for automatic switching.
+    description: Minimum ping improvement required for automatic switching.
   auto_check_interval_seconds:
     name: Slot check, seconds
     description: Interval for the independent check of the active slot; the result is stored in the shared outbound latency file.
   auto_check_failures:
-    name: Consecutive error threshold
-    description: Shared threshold for active-slot emergency failover and for stopping a one-connection draining slot after bad full scans.
+    name: Consecutive failure threshold
+    description: "Shared threshold of consecutive failures: used both for emergency failover of the active slot and for stopping a draining slot with one connection after full checks."
   auto_check_max_latency_ms:
     name: Maximum latency, ms
-    description: 0 disables the limit; exceeding it fails the active path and rejects a switch candidate.
+    description: 0 disables the limit; exceeding it is treated as an active-path failure and prevents switching to a candidate.
   auto_best_check_interval_seconds:
     name: Full check, seconds
-    description: Separate interval for scanning all outbounds and updating the shared latency file; best-path selection is controlled separately.
+    description: Separate interval for checking all outbounds and updating the shared latency file; selecting the best option is controlled by a separate switch.
   auto_check_timeout_seconds:
     name: Active path timeout, seconds
-    description: Maximum time for checking the current working tunnel.
+    description: Maximum time allowed for checking the current working tunnel.
   latency_test_timeout_seconds:
     name: Outbound timeout, seconds
-    description: Maximum time for one outbound latency measurement.
+    description: Maximum time allowed for a single latency measurement.
   latency_test_parallelism:
     name: Check parallelism
-    description: 0 selects a safe automatic limit; 1–32 sets the maximum concurrent tests.
+    description: 0 selects a safe automatic limit; 1–32 sets the maximum number of concurrent checks.
   primary_test_url:
     name: Primary test URL
-    description: First control endpoint; used in parallel with the secondary URL for every check.
+    description: First control endpoint; used in parallel with the secondary URL in every check.
   secondary_test_url:
     name: Secondary test URL
-    description: Second independent control endpoint; the fastest successful result is stored.
+    description: Second independent control endpoint; the lowest successful latency from the two requests is stored.
   selector_control_enabled:
     name: External selector control
     description: Switch an external selector between xray-a and xray-b.
@@ -85,28 +79,28 @@ configuration:
     description: Base URL of a compatible Clash selector API.
   selector_api_secret:
     name: Selector API secret
-    description: Bearer token for selector API access.
+    description: Bearer token used to access the selector API.
   selector_tag:
     name: Selector name
     description: Selector tag containing xray-a and xray-b.
   selector_status_interval_seconds:
     name: Selector polling, seconds
-    description: Normal selector polling interval; automatically reduced to 1 second while draining or after Clash API becomes unavailable.
+    description: Normal selector polling interval; automatically reduced to 1 second during draining and after the Clash API becomes unavailable.
   drain_quiet_seconds:
     name: Drain quiet period, seconds
-    description: Required zero-activity period before stopping the old slot.
+    description: How long to wait for zero activity before stopping the old slot.
   drain_poll_interval_seconds:
     name: Drain polling, seconds
-    description: Interval for recounting old-slot connections.
+    description: Interval for recounting the remaining connections of the old slot.
   drain_timeout_minutes:
     name: Drain timeout, minutes
-    description: 0 waits naturally; another value force-stops the slot after the timeout.
+    description: 0 waits for natural completion; any other value force-stops the slot when the timeout expires.
   router_control_enabled:
     name: OpenWrt control
-    description: Control the UCI firewall rule over SSH and restore the selected state after external firewall reloads.
+    description: Control the UCI firewall rule over SSH and restore the selected state after an external rules reload.
   router_host:
     name: OpenWrt host
-    description: IP address or hostname of the SSH firewall host.
+    description: IP address or hostname of the SSH host containing the firewall rule.
   router_ssh_port:
     name: OpenWrt SSH port
     description: SSH server port on the remote host.
@@ -114,23 +108,26 @@ configuration:
     name: SSH user
     description: Username used to connect to OpenWrt.
   router_auth_method:
-    name: SSH authentication
-    description: Use an existing key, a password, or generate a key.
+    name: SSH authentication method
+    description: Existing key, password, or automatic key generation.
   router_ssh_key_name:
     name: SSH key name
-    description: Private key filename inside /config/ssh.
+    description: Private key filename in the /config/ssh directory.
   router_ssh_key_path:
     name: SSH key path
-    description: Optional path relative to the app configuration directory.
+    description: Optional absolute path to the private SSH key inside the app container.
   router_ssh_password:
     name: SSH password
-    description: Password used by the password authentication method.
+    description: Password for the password authentication method.
   router_firewall_rule:
     name: Firewall rule name
-    description: UCI rule name controlled by the play/pause button.
+    description: Name of the UCI rule toggled by the play/pause button.
   router_status_interval_seconds:
     name: OpenWrt polling, seconds
-    description: UCI rule polling interval; the state selected in the UI is automatically restored if sing-box or firewall changes it.
+    description: UCI rule polling interval; if sing-box or the firewall changes its state, the state selected in the UI is restored automatically.
+  ui_port:
+    name: Web UI port
+    description: Port used by the app web interface; changes take effect after a restart.
   ui_sort:
     name: List sorting
     description: Initial outbound order in the web interface.
@@ -139,15 +136,10 @@ configuration:
     description: Initial protocol filter; all displays every protocol.
   ui_max_ping_ms:
     name: Maximum UI ping, ms
-    description: Hide results above this latency in the UI; 0 disables the limit.
+    description: Hide results above the specified value in the UI; 0 disables the limit.
   ui_hide_unavailable:
     name: Hide unavailable
-    description: Do not show outbounds with a failed test.
+    description: Do not show outbounds with a failed check.
   ui_hide_excluded:
     name: Hide excluded
     description: Do not show outbounds matching auto_switch_excluded in the list.
-network:
-  10808/tcp: SOCKS5 · xray-a slot
-  10808/udp: SOCKS5 UDP · xray-a slot
-  10809/tcp: SOCKS5 · xray-b slot
-  10809/udp: SOCKS5 UDP · xray-b slot
