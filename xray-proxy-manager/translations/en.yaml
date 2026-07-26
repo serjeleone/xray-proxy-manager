@@ -41,6 +41,9 @@ configuration:
   auto_switch_best_enabled:
     name: Select best outbound
     description: Switch to a sufficiently faster outbound after a full check.
+  auto_switch_preferred_country:
+    name: Preferred country
+    description: ISO country code prioritized for best-outbound selection; all countries are used when no preferred-country candidate meets the limits.
   auto_switch_excluded:
     name: Exclude from selection
     description: Comma-separated ISO country codes and text fragments always excluded from automatic selection. Disable “Hide excluded” in the UI to select one manually.
@@ -75,7 +78,7 @@ configuration:
     name: Secondary test URL
     description: Second independent control endpoint; the fastest successful result is stored.
   selector_control_enabled:
-    name: Selector control
+    name: External selector control
     description: Switch an external selector between xray-a and xray-b.
   selector_api_url:
     name: Selector API URL
@@ -100,7 +103,7 @@ configuration:
     description: 0 waits naturally; another value force-stops the slot after the timeout.
   router_control_enabled:
     name: OpenWrt control
-    description: Control the UCI firewall rule and draining-slot guard over SSH; required for safe dual-slot switching.
+    description: Control the UCI firewall rule over SSH and restore the selected state after external firewall reloads.
   router_host:
     name: OpenWrt host
     description: IP address or hostname of the SSH firewall host.
@@ -125,12 +128,9 @@ configuration:
   router_firewall_rule:
     name: Firewall rule name
     description: UCI rule name controlled by the play/pause button.
-  router_xray_host:
-    name: Xray Proxy Manager host
-    description: LAN IP of the Home Assistant host reached by OpenWrt on the xray-a and xray-b ports; used by the draining-slot guard.
   router_status_interval_seconds:
     name: OpenWrt polling, seconds
-    description: Interval for checking the UCI rule and nftables guard; protection is restored immediately after a managed reload.
+    description: UCI rule polling interval; the state selected in the UI is automatically restored if sing-box or firewall changes it.
   ui_sort:
     name: List sorting
     description: Initial outbound order in the web interface.

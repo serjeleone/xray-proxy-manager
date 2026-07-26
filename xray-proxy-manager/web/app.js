@@ -143,10 +143,6 @@ function formatRelative(timestamp) {
   return `${days} дн. назад`;
 }
 
-function formatRelativeShort(timestamp) {
-  return formatRelative(timestamp).replace(/ назад$/, '');
-}
-
 function protocolMeta(item) {
   const endpoint = item.server ? `${item.server}${item.port ? `:${item.port}` : ''}` : 'адрес скрыт в конфигурации';
   return `${endpoint} · ${item.outbound_tag}`;
@@ -162,6 +158,7 @@ function sameCandidateIdentity(left, right) {
   if (!left || !right) return false;
   if (left.id && right.id && left.id === right.id) return true;
   if (left.fingerprint && right.fingerprint && left.fingerprint === right.fingerprint) return true;
+  if (left.id || right.id || left.fingerprint || right.fingerprint) return false;
   return Boolean(
     left.outbound_tag && right.outbound_tag
     && String(left.protocol || '').toLowerCase() === String(right.protocol || '').toLowerCase()
@@ -252,9 +249,40 @@ function autoCheckerFormValues() {
     auto_check_failures: Number.parseInt($('autoCheckFailures').value, 10),
     auto_check_max_latency_ms: Number.parseInt($('autoCheckMaxLatency').value, 10),
     auto_best_check_interval_seconds: Number.parseInt($('autoBestCheckInterval').value, 10),
+    auto_switch_preferred_country: $('autoSwitchPreferredCountry').value,
     auto_switch_excluded: normalizeAutoSwitchExclusions($('autoSwitchExcluded').value),
     auto_switch_min_ping_delta_ms: Number.parseInt($('autoSwitchMinPingDelta').value, 10),
   };
+}
+
+function countryDisplayName(code) {
+  try {
+    const name = new Intl.DisplayNames(['ru-RU'], { type: 'region' }).of(code);
+    return name || code;
+  } catch (_error) {
+    return code;
+  }
+}
+
+function renderPreferredCountries(payload) {
+  const select = $('autoSwitchPreferredCountry');
+  const checker = payload.auto_checker || {};
+  const current = select.matches(':focus')
+    ? select.value
+    : (checker.preferred_country || select.value || '');
+  const codes = [...new Set(
+    (payload.candidates || [])
+      .map((item) => String(item.country_code || '').toUpperCase())
+      .filter((code) => /^[A-Z]{2}$/.test(code))
+      .concat(/^[A-Z]{2}$/.test(current) ? [current] : [])
+  )].sort((left, right) => countryDisplayName(left).localeCompare(
+    countryDisplayName(right), 'ru', { sensitivity: 'base' }
+  ));
+  select.innerHTML = [
+    '<option value="">Без приоритета</option>',
+    ...codes.map((code) => `<option value="${escapeHtml(code)}">${escapeHtml(code)} — ${escapeHtml(countryDisplayName(code))}</option>`),
+  ].join('');
+  select.value = codes.includes(current) ? current : '';
 }
 
 function subscriptionFormValues() {
@@ -485,6 +513,8 @@ function initializeSettings(payload) {
   $('autoCheckFailures').value = checker.failure_threshold ?? 3;
   $('autoCheckMaxLatency').value = checker.max_latency_ms ?? 500;
   $('autoBestCheckInterval').value = checker.best_check_interval_seconds ?? 600;
+  renderPreferredCountries(payload);
+  $('autoSwitchPreferredCountry').value = checker.preferred_country || '';
   $('autoSwitchExcluded').value = checker.excluded ?? 'RU';
   $('autoSwitchMinPingDelta').value = checker.min_ping_delta_ms ?? 100;
   $('subscriptionUrl').value = subscription.url || '';
@@ -505,6 +535,7 @@ function render(payload) {
   state.payload = payload;
   initializeSettings(payload);
   renderProtocols(payload.protocols || []);
+  renderPreferredCountries(payload);
   const backendProtocol = payload.ui_settings?.protocol_filter || 'all';
   if (!$('protocolFilter').matches(':focus')) $('protocolFilter').value = backendProtocol;
 
@@ -514,9 +545,11 @@ function render(payload) {
   $('activeName').textContent = active?.name || 'Активный outbound не определён';
   const blueGreen = payload.blue_green || {};
   const activeSlot = blueGreen.slots?.[blueGreen.active_slot];
-  const metaParts = active ? [active.protocol, protocolMeta(active)] : ['Ожидание трафика'];
-  metaParts.push(blueGreen.mode === 'single' ? 'однослотовый режим' : 'двухслотовый режим');
-  if (activeSlot) metaParts.push(blueGreen.active_slot, `SOCKS ${activeSlot.socks_tcp}`);
+  const haHost = payload.home_assistant_host || 'host';
+  const metaParts = activeSlot
+    ? [`IN: SOCKS ${haHost}:${activeSlot.socks_tcp}`, `OUT: ${active?.protocol || '—'}`]
+    : ['Ожидание трафика'];
+  metaParts.push(blueGreen.mode === 'single' ? 'Однослотовый режим' : 'Двухслотовый режим');
   let activeMeta = metaParts.join(' · ');
   const drainingSlot = Object.values(blueGreen.slots || {}).find((slot) => slot.draining);
   if (drainingSlot) {
@@ -543,12 +576,11 @@ function render(payload) {
 
   const checker = payload.auto_checker || {};
   $('autoCheckerState').textContent = checker.enabled ? 'Включён' : 'Выключен';
-  const slotLastCheck = formatRelativeShort(checker.last_check_at);
-  const fullLastCheck = formatRelativeShort(checker.last_best_check_at);
-  const lastChecksSuffix = checker.last_check_at || checker.last_best_check_at ? ' назад' : '';
-  const lastChecks = `Последняя проверка: ${slotLastCheck}/${fullLastCheck}${lastChecksSuffix}`;
+  const slotLastCheck = formatRelative(checker.last_check_at);
+  const fullLastCheck = formatRelative(checker.last_best_check_at);
+  const lastChecks = `Последняя проверка: ${slotLastCheck}/${fullLastCheck}`;
   const bestMode = checker.switch_to_best
-    ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · исключения: ${checker.excluded || 'нет'}`
+    ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · предпочитаемая страна: ${checker.preferred_country || 'нет'} · исключения: ${checker.excluded || 'нет'}`
     : ' · автопереключение выключено';
   const checkerMode = checker.enabled ? '' : ' · авто-чекер выключен';
   const lastError = checker.last_error ? ` · последняя ошибка: ${checker.last_error}` : '';
@@ -590,6 +622,8 @@ function render(payload) {
   const running = Boolean(latencyJob.running || refreshJob.running || switchJob.running);
   $('testAllButton').disabled = running;
   $('refreshButton').disabled = running;
+  $('slotModeButton').disabled = running;
+  $('slotModeButton').textContent = blueGreen.dual_slot_enabled ? 'Режим: 2 слота' : 'Режим: 1 слот';
   if (running) {
     $('jobBanner').classList.remove('hidden');
     $('jobBanner').textContent = switchJob.running
@@ -906,6 +940,23 @@ async function refreshSubscription() {
   } catch (error) { toast(`Ошибка: ${error.message}`, true); }
 }
 
+async function toggleSlotMode() {
+  const dualEnabled = Boolean(state.payload?.blue_green?.dual_slot_enabled);
+  const desired = !dualEnabled;
+  const label = desired ? 'двухслотовый' : 'однослотовый';
+  if (!window.confirm(`Переключить Xray в ${label} режим? Все процессы Xray будут перезапущены.`)) return;
+  try {
+    $('slotModeButton').disabled = true;
+    toast(`Переключение в ${label} режим…`);
+    await post('api/mode', { dual_slot_enabled: desired });
+    toast(`Включён ${label} режим`);
+    await fetchStatus();
+  } catch (error) {
+    toast(`Ошибка смены режима: ${error.message}`, true);
+    await fetchStatus();
+  }
+}
+
 function showRestartModal(changes) {
   state.restartChanges = changes;
   $('restartModal').classList.remove('hidden');
@@ -1001,6 +1052,7 @@ document.addEventListener('keydown', (event) => {
 });
 $('testAllButton').addEventListener('click', () => testCandidates());
 $('refreshButton').addEventListener('click', refreshSubscription);
+$('slotModeButton').addEventListener('click', toggleSlotMode);
 $('trafficButton').addEventListener('click', toggleTraffic);
 $('stopDrainTopButton').addEventListener('click', () => stopDrainingSlot($('stopDrainTopButton').dataset.stopSlot));
 $('logsCopyButton').addEventListener('click', copyLogs);
@@ -1018,8 +1070,8 @@ $('copyRouterKey').addEventListener('click', async () => {
 });
 $('saveAutoChecker').addEventListener('click', saveAutoChecker);
 $('saveSubscription').addEventListener('click', saveSubscriptionSettings);
-['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
-  $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled'].includes(id) ? 'change' : 'input', updateSaveButtons);
+['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoSwitchPreferredCountry', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
+  $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoSwitchPreferredCountry'].includes(id) ? 'change' : 'input', updateSaveButtons);
 });
 ['subscriptionUrl', 'subscriptionInterval'].forEach((id) => $(id).addEventListener('input', updateSaveButtons));
 ['sortSelect', 'protocolFilter', 'maxPing', 'hideUnavailable', 'hideExcluded'].forEach((id) => {

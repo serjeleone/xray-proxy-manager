@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=12">
+  <link rel="stylesheet" href="style.css?ui=13">
 </head>
 <body>
   <main class="shell">
@@ -64,6 +64,7 @@
         <div class="hero-actions">
           <button id="testAllButton" class="button primary" type="button">Проверить все</button>
           <button id="refreshButton" class="button secondary" type="button">Обновить подписку</button>
+          <button id="slotModeButton" class="button secondary" type="button">Режим: —</button>
           <button id="stopDrainTopButton" class="button danger hero-stop hidden" type="button" data-stop-slot="">Стоп</button>
         </div>
       </div>
@@ -119,6 +120,12 @@
           <label>
             <span>Порог ошибок, подряд</span>
             <input id="autoCheckFailures" type="number" min="1" max="100" step="1" inputmode="numeric">
+          </label>
+          <label>
+            <span>Предпочитаемая страна</span>
+            <select id="autoSwitchPreferredCountry">
+              <option value="">Без приоритета</option>
+            </select>
           </label>
           <label>
             <span>Исключить из выбора</span>
@@ -262,6 +269,6 @@
     </div>
   </div>
 
-  <script src="app.js?ui=12"></script>
+  <script src="app.js?ui=13"></script>
 </body>
 </html>

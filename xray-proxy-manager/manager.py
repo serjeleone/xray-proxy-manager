@@ -6,7 +6,6 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 import hashlib
 import http.server
-import ipaddress
 import json
 import os
 import re
@@ -54,7 +53,7 @@ UI_PORT = 8099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.7.0'
+ADDON_VERSION = '0.7.1'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_TEST_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -69,8 +68,10 @@ SORT_VALUES = {
 }
 RUNTIME_SETTING_KEYS = {
     'subscription_url',
+    'dual_slot_enabled',
     'auto_checker_enabled',
     'auto_switch_best_enabled',
+    'auto_switch_preferred_country',
     'auto_switch_excluded',
     'auto_switch_min_ping_delta_ms',
     'auto_check_interval_seconds',
@@ -94,6 +95,7 @@ RETIRED_OPTION_KEYS = {
     'auto_fix_routing_tags',
     'restart_on_runtime_error',
     'auto_add_proxy_direct',
+    'router_xray_host',
 }
 OUTBOUND_LOG_RE = re.compile(r'\[[^\]\n]*?->\s*([^\]\s]+)\]')
 XRAY_READING_CONFIG_RE = re.compile(r'(Reading config:)\s*&\{Name:([^}\s]+)\s+Format:[^}]+\}')
@@ -249,6 +251,15 @@ def normalize_auto_switch_exclusions(value: Any) -> str:
 def normalize_country_codes(value: Any) -> str:
     # Compatibility alias for existing callers and persisted configurations.
     return normalize_auto_switch_exclusions(value)
+
+
+def normalize_preferred_country(value: Any) -> str:
+    text = str(value or '').strip().upper()
+    if not text:
+        return ''
+    if not re.fullmatch(r'[A-Z]{2}', text) or text not in ISO_COUNTRY_CODES:
+        raise ValueError(f'Неизвестный код предпочитаемой страны: {text}')
+    return text
 
 
 def parse_auto_switch_exclusions(value: Any) -> tuple[set[str], list[str]]:
@@ -573,7 +584,6 @@ class XraySlot:
     drain_degraded_checks: int = 0
     drain_last_latency_ms: int | None = None
     drain_last_checked_at: int | None = None
-    drain_guarded: bool = False
     drain_new_connections: int = 0
     drain_stalled_connections: int = 0
     drain_known_connection_ids: set[str] = field(default_factory=set, repr=False)
@@ -707,17 +717,13 @@ class XrayManager:
         self.router_ssh_key_path_override = str(self.options.get('router_ssh_key_path') or '').strip()
         self.router_ssh_key_path: Path | None = None
         self.router_firewall_rule = str(self.options.get('router_firewall_rule') or 'mark_domains').strip()
-        self.router_xray_host = str(self.options.get('router_xray_host') or '192.168.1.2').strip()
-        try:
-            self.router_xray_ip = ipaddress.ip_address(self.router_xray_host)
-        except ValueError as exc:
-            raise RuntimeError('router_xray_host must be a valid IP address.') from exc
         self.router_status_interval_seconds = max(
             5, int(self.options.get('router_status_interval_seconds', 10) or 10)
         )
 
         self.auto_checker_enabled = True
         self.auto_switch_best_enabled = True
+        self.auto_switch_preferred_country = ''
         self.auto_switch_excluded = 'RU'
         self.auto_switch_min_ping_delta_ms = 100
         self.auto_check_interval_seconds = 60
@@ -747,7 +753,6 @@ class XrayManager:
         self.lock = threading.RLock()
         self.switch_lock = threading.Lock()
         self.router_lock = threading.Lock()
-        self.router_guard_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.settings_event = threading.Event()
         self.subscription: list[dict[str, Any]] = []
@@ -802,6 +807,7 @@ class XrayManager:
             remembered_slot if self.dual_slot_enabled and remembered_slot in SLOT_TAGS else 'xray-a'
         )
         self.started_at = now_ts()
+        self.home_assistant_host = self.detect_home_assistant_host()
         self.next_update_at = (
             now_ts() + self.update_interval_hours * 3600
             if self.update_interval_hours > 0 else None
@@ -823,19 +829,16 @@ class XrayManager:
             'rule_name': self.router_firewall_rule,
             'rule_section': '',
             'busy': False,
+            'desired_rule_enabled': (
+                self.state.get('router_rule_desired_enabled')
+                if isinstance(self.state.get('router_rule_desired_enabled'), bool)
+                else None
+            ),
             'last_checked_at': None,
             'error': '',
             'auth_method': self.router_auth_method,
             'key_name': self.router_ssh_key_name if self.router_auth_method != 'password' else '',
             'public_key': '',
-            'drain_guard': {
-                'blocked_slot': '',
-                'blocked_port': None,
-                'available': False,
-                'last_checked_at': None,
-                'last_changed_at': None,
-                'error': '',
-            },
         }
         self.prepare_router_auth()
         self.options_migration_pending = bool(base_changed or runtime_changed)
@@ -849,8 +852,12 @@ class XrayManager:
 
     def _apply_runtime_values(self, source: dict[str, Any]) -> None:
         self.subscription_url = str(source.get('subscription_url') or '').strip()
+        self.dual_slot_enabled = to_bool(source.get('dual_slot_enabled', True))
         self.auto_checker_enabled = to_bool(source.get('auto_checker_enabled', True))
         self.auto_switch_best_enabled = to_bool(source.get('auto_switch_best_enabled', True))
+        self.auto_switch_preferred_country = normalize_preferred_country(
+            source.get('auto_switch_preferred_country', '')
+        )
         self.auto_switch_excluded = normalize_auto_switch_exclusions(
             source.get('auto_switch_excluded', 'RU')
         )
@@ -894,8 +901,13 @@ class XrayManager:
                 if not text or parsed.scheme not in {'http', 'https'} or not parsed.netloc or len(text) > 4096:
                     raise ValueError('Ссылка на подписку должна быть корректным HTTP(S)-адресом')
                 normalized[key] = text
-            elif key in {'auto_checker_enabled', 'auto_switch_best_enabled', 'ui_hide_unavailable', 'ui_hide_excluded'}:
+            elif key in {
+                'dual_slot_enabled', 'auto_checker_enabled', 'auto_switch_best_enabled',
+                'ui_hide_unavailable', 'ui_hide_excluded',
+            }:
                 normalized[key] = to_bool(value)
+            elif key == 'auto_switch_preferred_country':
+                normalized[key] = normalize_preferred_country(value)
             elif key == 'auto_switch_excluded':
                 normalized[key] = normalize_auto_switch_exclusions(value)
             elif key == 'auto_switch_min_ping_delta_ms':
@@ -926,6 +938,8 @@ class XrayManager:
 
     def update_runtime_settings(self, changes: dict[str, Any]) -> dict[str, Any]:
         normalized = self.validate_runtime_changes(changes)
+        if 'dual_slot_enabled' in normalized:
+            raise ValueError('Режим слотов изменяется отдельной кнопкой в верхнем блоке')
         with self.lock:
             self.options.update(normalized)
             self.options.pop(LEGACY_AUTO_SWITCH_EXCLUDED_KEY, None)
@@ -948,6 +962,84 @@ class XrayManager:
             'supervisor_synced': supervisor_synced,
             'supervisor_error': supervisor_error,
         }
+
+    def set_slot_mode(self, dual_slot_enabled: bool) -> dict[str, Any]:
+        desired_mode = bool(dual_slot_enabled)
+        with self.lock:
+            if desired_mode == self.dual_slot_enabled:
+                return {'ok': True, 'dual_slot_enabled': desired_mode, 'changed': False}
+            current_slot_tag = self.active_slot_tag
+            current_candidate = (
+                self.slots[current_slot_tag].candidate
+                or self.candidate_by_id(self.active_candidate_id)
+            )
+            if current_candidate is None:
+                current_candidate = self.choose_initial_candidate()
+            previous_mode = self.dual_slot_enabled
+            previous_slot_tag = self.active_slot_tag
+
+        if not self.switch_lock.acquire(blocking=False):
+            raise RuntimeError('Переключение режима уже выполняется')
+        try:
+            with self.lock:
+                self.state['jobs']['switch'].update({
+                    'running': True,
+                    'message': 'Перезапуск Xray для смены режима...',
+                })
+                self.save_state()
+            self.stop_xray()
+            with self.lock:
+                self.dual_slot_enabled = desired_mode
+                self.active_slot_tag = 'xray-a'
+                self.active_candidate_id = current_candidate.id
+            self.start_initial_candidate(
+                current_candidate,
+                'slot mode changed from UI',
+            )
+
+            with self.lock:
+                self.options['dual_slot_enabled'] = desired_mode
+                runtime_options = load_json(RUNTIME_OPTIONS_PATH, {})
+                if not isinstance(runtime_options, dict):
+                    runtime_options = {}
+                runtime_options['dual_slot_enabled'] = desired_mode
+                atomic_write_json(RUNTIME_OPTIONS_PATH, runtime_options)
+                self.save_state()
+            supervisor_synced, supervisor_error = self.sync_supervisor_options()
+            log(
+                'Xray slot mode changed to '
+                f'{"dual-slot" if desired_mode else "single-slot"}; processes restarted'
+            )
+            return {
+                'ok': True,
+                'dual_slot_enabled': desired_mode,
+                'changed': True,
+                'supervisor_synced': supervisor_synced,
+                'supervisor_error': supervisor_error,
+            }
+        except Exception:
+            try:
+                self.stop_xray()
+                with self.lock:
+                    self.dual_slot_enabled = previous_mode
+                    self.active_slot_tag = (
+                        previous_slot_tag
+                        if previous_mode and previous_slot_tag in SLOT_TAGS
+                        else 'xray-a'
+                    )
+                    self.active_candidate_id = current_candidate.id
+                self.start_initial_candidate(
+                    current_candidate,
+                    'rollback after failed slot mode change',
+                )
+            except Exception as rollback_exc:
+                log(f'could not restore previous slot mode: {rollback_exc}', error=True)
+            raise
+        finally:
+            with self.lock:
+                self.state['jobs']['switch'].update({'running': False, 'message': ''})
+                self.save_state()
+            self.switch_lock.release()
 
     def sync_supervisor_options(self) -> tuple[bool, str]:
         token = os.environ.get('SUPERVISOR_TOKEN', '').strip()
@@ -972,6 +1064,42 @@ class XrayManager:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             log(f'could not sync UI settings to Supervisor: {exc}', error=True)
             return False, f'{exc}; настройки сохранены локально'
+
+    def detect_home_assistant_host(self) -> str:
+        """Return the Home Assistant host address visible to LAN clients."""
+        token = os.environ.get('SUPERVISOR_TOKEN', '').strip()
+        candidates: list[str] = []
+        if token:
+            request = urllib.request.Request(
+                'http://supervisor/network/info',
+                headers={'Authorization': f'Bearer {token}'},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode('utf-8') or '{}')
+                data = payload.get('data') if isinstance(payload, dict) else None
+                interfaces = data.get('interfaces') if isinstance(data, dict) else None
+                if isinstance(interfaces, list):
+                    ordered = sorted(
+                        (item for item in interfaces if isinstance(item, dict)),
+                        key=lambda item: not bool(item.get('primary')),
+                    )
+                    for interface in ordered:
+                        ipv4 = interface.get('ipv4')
+                        addresses = ipv4.get('address') if isinstance(ipv4, dict) else None
+                        if isinstance(addresses, list):
+                            candidates.extend(str(item).split('/', 1)[0] for item in addresses)
+            except Exception as exc:
+                self.debug_log(f'could not read Home Assistant host address from Supervisor: {exc}')
+
+        for address in candidates:
+            try:
+                parsed = socket.inet_pton(socket.AF_INET, address)
+            except OSError:
+                continue
+            if parsed and not address.startswith('127.') and address != '0.0.0.0':
+                return address
+        return 'host'
 
     def save_state(self) -> None:
         self.state['active_candidate_id'] = self.active_candidate_id
@@ -1217,7 +1345,6 @@ class XrayManager:
             current_slot.drain_degraded_checks = 0
             current_slot.drain_last_latency_ms = None
             current_slot.drain_last_checked_at = None
-            current_slot.drain_guarded = False
             current_slot.drain_new_connections = 0
             current_slot.drain_stalled_connections = 0
             current_slot.drain_known_connection_ids.clear()
@@ -1232,7 +1359,6 @@ class XrayManager:
                 self.save_active_config(current, candidate)
             except Exception as exc:
                 log(f'could not save adopted selector config: {exc}', error=True)
-        self.sync_router_slot_state(current, blocked_slot=None, required=False)
         log(
             f'adopted live selector slot {current} only because manager-expected '
             f'{previous_slot_tag} was not running',
@@ -1271,7 +1397,6 @@ class XrayManager:
                     current_slot.drain_degraded_checks = 0
                     current_slot.drain_last_latency_ms = None
                     current_slot.drain_last_checked_at = None
-                    current_slot.drain_guarded = False
                     current_slot.drain_new_connections = 0
                     current_slot.drain_stalled_connections = 0
                     current_slot.drain_known_connection_ids.clear()
@@ -1285,7 +1410,6 @@ class XrayManager:
                         self.save_active_config(current, candidate)
                     except Exception as exc:
                         log(f'could not save adopted selector config: {exc}', error=True)
-                self.sync_router_slot_state(current, blocked_slot=None, required=False)
                 log(f'adopted live selector slot {current} because {expected} was not running', error=True)
         except Exception as exc:
             log(f'could not reconcile selector state: {exc}', error=True)
@@ -1393,11 +1517,6 @@ class XrayManager:
                     (tag for tag in SLOT_TAGS if self.slots[tag].draining),
                     None,
                 )
-            self.sync_router_slot_state(
-                expected,
-                blocked_slot=draining,
-                required=False,
-            )
         if not need_connections_check:
             return
 
@@ -1613,176 +1732,6 @@ class XrayManager:
             raise RuntimeError(message)
         return result.stdout.strip()
 
-    def router_slot_state_remote_script(
-        self,
-        expected_slot: str,
-        blocked_slot: str | None,
-    ) -> str:
-        """Build an idempotent OpenWrt script for selector persistence and drain guard."""
-        if expected_slot not in SLOT_TAGS:
-            raise ValueError('Unknown expected Xray slot')
-        if blocked_slot is not None and blocked_slot not in SLOT_TAGS:
-            raise ValueError('Unknown blocked Xray slot')
-        blocked_port = self.slots[blocked_slot].socks_tcp if blocked_slot else None
-        address_keyword = 'ip6 daddr' if self.router_xray_ip.version == 6 else 'ip daddr'
-        desired_block = f'{blocked_slot}:{blocked_port}' if blocked_slot and blocked_port else ''
-        guard_comment = f'xpm-block-new-{blocked_slot}' if blocked_slot else ''
-        apply_payload = ''
-        if blocked_slot and blocked_port is not None:
-            apply_payload = '\n'.join([
-                'add table inet xray_proxy_manager',
-                'add chain inet xray_proxy_manager drain_guard { type filter hook output priority -10; policy accept; }',
-                f'add rule inet xray_proxy_manager drain_guard {address_keyword} {self.router_xray_ip} '
-                f'ct state new tcp dport {blocked_port} reject with tcp reset '
-                f'comment "{guard_comment}"',
-                f'add rule inet xray_proxy_manager drain_guard {address_keyword} {self.router_xray_ip} '
-                f'ct state new udp dport {blocked_port} reject with icmpx type port-unreachable '
-                f'comment "{guard_comment}"',
-            ]) + '\n'
-        lines = [
-            'set -e',
-            'STATE_DIR=/etc/xray-proxy-manager',
-            'EXPECTED_FILE="$STATE_DIR/active-slot"',
-            'BLOCK_FILE="$STATE_DIR/drain-blocked"',
-            f'EXPECTED={shlex.quote(expected_slot)}',
-            f'DESIRED_BLOCK={shlex.quote(desired_block)}',
-            'mkdir -p "$STATE_DIR"',
-            'CURRENT_EXPECTED="$(cat "$EXPECTED_FILE" 2>/dev/null || true)"',
-            'CURRENT_BLOCK="$(cat "$BLOCK_FILE" 2>/dev/null || true)"',
-            'GUARD_OK=0',
-        ]
-        if blocked_slot and blocked_port is not None:
-            lines.extend([
-                'if nft list table inet xray_proxy_manager >/dev/null 2>&1; then',
-                '  GUARD_RULES="$(nft list chain inet xray_proxy_manager drain_guard 2>/dev/null || true)"',
-                f'  if printf "%s\\n" "$GUARD_RULES" | grep -q {shlex.quote(f"tcp dport {blocked_port}")} '
-                f'&& printf "%s\\n" "$GUARD_RULES" | grep -q {shlex.quote(f"udp dport {blocked_port}")} '
-                f'&& [ "$(printf "%s\\n" "$GUARD_RULES" | grep -c {shlex.quote(guard_comment)} || true)" -ge 2 ]; then',
-                '    GUARD_OK=1',
-                '  fi',
-                'fi',
-            ])
-        else:
-            lines.append('if ! nft list table inet xray_proxy_manager >/dev/null 2>&1; then GUARD_OK=1; fi')
-        lines.extend([
-            'if [ "$CURRENT_EXPECTED" = "$EXPECTED" ] '
-            '&& [ "$CURRENT_BLOCK" = "$DESIRED_BLOCK" ] '
-            '&& [ "$GUARD_OK" = 1 ]; then',
-            '  printf "unchanged:%s:%s\n" "$EXPECTED" "$DESIRED_BLOCK"',
-            '  exit 0',
-            'fi',
-            'printf "%s\n" "$EXPECTED" > "$EXPECTED_FILE"',
-            'printf "%s\n" "$DESIRED_BLOCK" > "$BLOCK_FILE"',
-            'chmod 600 "$EXPECTED_FILE" "$BLOCK_FILE"',
-            'nft delete table inet xray_proxy_manager >/dev/null 2>&1 || true',
-        ])
-        if blocked_slot and blocked_port is not None:
-            lines.extend([
-                f'printf %s {shlex.quote(apply_payload)} | nft -f -',
-                f'printf "blocked:%s:%s\n" {shlex.quote(blocked_slot)} {blocked_port}',
-            ])
-        else:
-            lines.append('printf "clear:%s\n" "$EXPECTED"')
-        return f'sh -c {shlex.quote(chr(10).join(lines))}'
-
-    def sync_router_slot_state(
-        self,
-        expected_slot: str,
-        *,
-        blocked_slot: str | None,
-        required: bool,
-    ) -> bool:
-        """Persist the expected selector and block new flows to a draining slot."""
-        if not self.router_control_enabled:
-            message = 'OpenWrt control is disabled; drain guard cannot be applied'
-            with self.lock:
-                guard = self.router_state.setdefault('drain_guard', {})
-                guard.update({
-                    'blocked_slot': '',
-                    'blocked_port': None,
-                    'available': False,
-                    'last_changed_at': now_ts(),
-                    'error': message if blocked_slot else '',
-                })
-            if required:
-                raise RuntimeError(message)
-            if blocked_slot:
-                log(message, error=True)
-            return False
-
-        acquired = self.router_guard_lock.acquire(timeout=20)
-        if not acquired:
-            message = 'OpenWrt drain guard update is already running'
-            if required:
-                raise RuntimeError(message)
-            log(message, error=True)
-            return False
-        try:
-            output = self.run_router_command(
-                self.router_slot_state_remote_script(expected_slot, blocked_slot),
-                timeout=25,
-            )
-            blocked_port = self.slots[blocked_slot].socks_tcp if blocked_slot else None
-            unchanged = output.startswith('unchanged:')
-            checked_at = now_ts()
-            with self.lock:
-                previous_guard = copy.deepcopy(
-                    self.router_state.setdefault('drain_guard', {})
-                )
-                for tag, slot in self.slots.items():
-                    slot.drain_guarded = tag == blocked_slot
-                guard = self.router_state.setdefault('drain_guard', {})
-                guard.update({
-                    'blocked_slot': blocked_slot or '',
-                    'blocked_port': blocked_port,
-                    'available': True,
-                    'last_checked_at': checked_at,
-                    'error': '',
-                })
-                state_changed = (
-                    not unchanged
-                    or previous_guard.get('blocked_slot') != (blocked_slot or '')
-                    or previous_guard.get('blocked_port') != blocked_port
-                    or not previous_guard.get('available')
-                    or bool(previous_guard.get('error'))
-                )
-                if state_changed:
-                    guard['last_changed_at'] = checked_at
-            if blocked_slot and state_changed:
-                log(
-                    f'OpenWrt drain guard blocks new TCP/UDP connections to '
-                    f'{blocked_slot} ({self.router_xray_host}:{blocked_port}); '
-                    f'expected selector is {expected_slot}'
-                )
-            elif blocked_slot:
-                self.debug_log(
-                    f'OpenWrt drain guard unchanged for {blocked_slot} '
-                    f'({self.router_xray_host}:{blocked_port}); expected={expected_slot}'
-                )
-            elif state_changed:
-                log(f'OpenWrt drain guard cleared; expected selector is {expected_slot}')
-            else:
-                self.debug_log(
-                    f'OpenWrt drain guard remains clear; expected={expected_slot}'
-                )
-            self.debug_log(f'OpenWrt slot-state response: {output or "empty"}')
-            return True
-        except Exception as exc:
-            message = f'OpenWrt drain guard update failed: {exc}'
-            with self.lock:
-                guard = self.router_state.setdefault('drain_guard', {})
-                guard.update({
-                    'available': False,
-                    'last_changed_at': now_ts(),
-                    'error': str(exc),
-                })
-            log(message, error=True)
-            if required:
-                raise RuntimeError(message) from exc
-            return False
-        finally:
-            self.router_guard_lock.release()
-
     def router_rule_remote_script(self, desired: bool | None = None) -> str:
         # router_firewall_rule is validated by SAFE_RULE_RE during initialization.
         lines = [
@@ -1834,7 +1783,16 @@ class XrayManager:
                 raise RuntimeError(output or 'OpenWrt вернул неизвестный ответ')
             enabled = match.group(1) == 'enabled'
             section = match.group(2).strip()
+            restore_to: bool | None = None
             with self.lock:
+                desired = self.router_state.get('desired_rule_enabled')
+                if not isinstance(desired, bool):
+                    desired = enabled
+                    self.router_state['desired_rule_enabled'] = desired
+                    self.state['router_rule_desired_enabled'] = desired
+                    self.save_state()
+                elif desired != enabled and not self.router_state.get('busy'):
+                    restore_to = desired
                 self.router_state.update({
                     'configured': True,
                     'available': True,
@@ -1844,6 +1802,12 @@ class XrayManager:
                     'error': '',
                     'last_checked_at': now_ts(),
                 })
+            if restore_to is not None:
+                log(
+                    f'OpenWrt rule {self.router_firewall_rule} changed outside the manager; '
+                    f'restoring {"enabled" if restore_to else "disabled"} state'
+                )
+                self.set_router_rule(restore_to, automatic=True)
         except Exception as exc:
             with self.lock:
                 self.router_state.update({
@@ -1855,12 +1819,15 @@ class XrayManager:
                     'last_checked_at': now_ts(),
                 })
 
-    def set_router_rule(self, enabled: bool) -> None:
+    def set_router_rule(self, enabled: bool, *, automatic: bool = False) -> None:
         if not self.router_lock.acquire(blocking=False):
             raise RuntimeError('Изменение правила уже выполняется')
         try:
             with self.lock:
                 self.router_state['busy'] = True
+                self.router_state['desired_rule_enabled'] = enabled
+                self.state['router_rule_desired_enabled'] = enabled
+                self.save_state()
             output = self.run_router_command(self.router_rule_remote_script(enabled), timeout=25)
             match = re.search(r'^(enabled|disabled):(.+)$', output.strip(), re.MULTILINE)
             if not match:
@@ -1874,21 +1841,15 @@ class XrayManager:
                     'rule_enabled': actual_enabled,
                     'rule_name': self.router_firewall_rule,
                     'rule_section': match.group(2).strip(),
+                    'desired_rule_enabled': enabled,
                     'error': '',
                     'last_checked_at': now_ts(),
                 })
-                expected = self.active_slot_tag
-                draining = next(
-                    (tag for tag in SLOT_TAGS if self.slots[tag].draining),
-                    None,
+            if automatic:
+                log(
+                    f'OpenWrt rule {self.router_firewall_rule} automatically restored to '
+                    f'{"enabled" if enabled else "disabled"}'
                 )
-            # fw4 reload replaces the nftables ruleset, therefore restore the
-            # transient drain guard immediately after changing the UCI rule.
-            self.sync_router_slot_state(
-                expected,
-                blocked_slot=draining,
-                required=False,
-            )
         except Exception as exc:
             with self.lock:
                 self.router_state.update({
@@ -1907,24 +1868,12 @@ class XrayManager:
     def router_status_loop(self) -> None:
         while not self.stop_event.is_set():
             self.refresh_router_status()
-            with self.lock:
-                expected = self.active_slot_tag
-                draining = next(
-                    (tag for tag in SLOT_TAGS if self.slots[tag].draining),
-                    None,
-                )
-            if draining:
-                self.sync_router_slot_state(
-                    expected,
-                    blocked_slot=draining,
-                    required=False,
-                )
             if self.stop_event.wait(self.router_status_interval_seconds):
                 break
 
     # ----- Subscription and Xray configuration -------------------------------------
 
-    def download_subscription(self) -> list[dict[str, Any]]:
+    def download_subscription_once(self, proxy_slot: str | None = None) -> list[dict[str, Any]]:
         with tempfile.NamedTemporaryFile(prefix='subscription.', suffix='.json', delete=False) as temp_file:
             temp_path = Path(temp_file.name)
         try:
@@ -1932,10 +1881,25 @@ class XrayManager:
                 CURL_BIN, '-fSL', '--connect-timeout', '20', '--max-time', '90',
                 '--retry', '2', '--retry-delay', '2', '--retry-all-errors',
                 '-A', self.user_agent,
-                self.subscription_url,
-                '-o', str(temp_path),
             ]
-            result = subprocess.run(command, capture_output=True, text=True, timeout=110)
+            environment = os.environ.copy()
+            for key in (
+                'http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+            ):
+                environment.pop(key, None)
+            if proxy_slot is None:
+                command.extend(['--noproxy', '*'])
+                environment['NO_PROXY'] = '*'
+                environment['no_proxy'] = '*'
+            else:
+                slot = self.slots[proxy_slot]
+                command.extend(['--socks5-hostname', f'127.0.0.1:{slot.socks_tcp}'])
+                if self.proxy_username and self.proxy_password:
+                    command.extend(['--proxy-user', f'{self.proxy_username}:{self.proxy_password}'])
+            command.extend([self.subscription_url, '-o', str(temp_path)])
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=110, env=environment
+            )
             if result.returncode != 0:
                 raise RuntimeError((result.stderr or result.stdout or 'curl failed').strip())
             with temp_path.open('r', encoding='utf-8-sig') as file_handle:
@@ -1952,6 +1916,35 @@ class XrayManager:
             return normalized
         finally:
             temp_path.unlink(missing_ok=True)
+
+    def download_subscription(self) -> list[dict[str, Any]]:
+        """Download directly first, then fall back to already running Xray slots."""
+        try:
+            configs = self.download_subscription_once()
+            self.debug_log('subscription downloaded directly without a slot proxy')
+            return configs
+        except Exception as direct_exc:
+            errors = [f'direct: {direct_exc}']
+            with self.lock:
+                ordered_slots = [self.active_slot_tag] + [
+                    tag for tag in SLOT_TAGS if tag != self.active_slot_tag
+                ]
+                running_slots = [tag for tag in ordered_slots if self.slots[tag].running()]
+            if not running_slots:
+                raise RuntimeError(str(direct_exc)) from direct_exc
+            log(
+                'direct subscription download failed; retrying through already running '
+                f'Xray slot(s): {", ".join(running_slots)}',
+                error=True,
+            )
+            for slot_tag in running_slots:
+                try:
+                    configs = self.download_subscription_once(slot_tag)
+                    log(f'subscription download succeeded through running Xray slot {slot_tag}')
+                    return configs
+                except Exception as proxy_exc:
+                    errors.append(f'{slot_tag}: {proxy_exc}')
+            raise RuntimeError('; '.join(errors)) from direct_exc
 
     def load_cached_subscription(self) -> list[dict[str, Any]]:
         payload = load_json(SUBSCRIPTION_PATH, None)
@@ -2032,8 +2025,12 @@ class XrayManager:
     def same_outbound(left: Candidate | None, right: Candidate | None) -> bool:
         if left is None or right is None:
             return False
-        if left.id == right.id or left.fingerprint == right.fingerprint:
+        if left.id and left.id == right.id:
             return True
+        if left.fingerprint and left.fingerprint == right.fingerprint:
+            return True
+        if left.id or right.id or left.fingerprint or right.fingerprint:
+            return False
         return (
             left.protocol.casefold(),
             left.server.casefold(),
@@ -2118,15 +2115,28 @@ class XrayManager:
             selected_latency - best_latency
             if isinstance(selected_latency, int) else None
         )
-        if selected_latency is None or (
+        preferred_country = getattr(self, 'auto_switch_preferred_country', '')
+        preferred_country_switch = bool(
+            preferred_country
+            and best.country_code == preferred_country
+            and selected.country_code != preferred_country
+        )
+        if preferred_country_switch or selected_latency is None or (
             isinstance(improvement, int)
             and improvement >= self.auto_switch_min_ping_delta_ms
         ):
             previous_latency = f'{selected_latency} ms' if selected_latency is not None else 'unknown'
-            log(
-                f'startup selected cached best outbound {best.name} ({best_latency} ms) '
-                f'instead of {selected.name} ({previous_latency})'
-            )
+            if preferred_country_switch:
+                log(
+                    f'startup selected preferred-country outbound {best.name} '
+                    f'[{preferred_country}] ({best_latency} ms) instead of '
+                    f'{selected.name} ({previous_latency})'
+                )
+            else:
+                log(
+                    f'startup selected cached best outbound {best.name} ({best_latency} ms) '
+                    f'instead of {selected.name} ({previous_latency})'
+                )
             return best
         return selected
 
@@ -2387,7 +2397,6 @@ class XrayManager:
 
     def stop_slot(self, slot_tag: str) -> None:
         slot = self.slots[slot_tag]
-        was_guarded = slot.drain_guarded
         with self.lock:
             process = slot.process
             if not process or process.poll() is not None:
@@ -2398,7 +2407,6 @@ class XrayManager:
                 slot.drain_degraded_checks = 0
                 slot.drain_last_latency_ms = None
                 slot.drain_last_checked_at = None
-                slot.drain_guarded = False
                 slot.drain_new_connections = 0
                 slot.drain_stalled_connections = 0
                 slot.drain_known_connection_ids.clear()
@@ -2406,12 +2414,6 @@ class XrayManager:
                 slot.drain_idle_polls.clear()
                 slot.drain_last_info_at = None
                 slot.drain_last_info_connections = None
-                if was_guarded:
-                    self.sync_router_slot_state(
-                        self.active_slot_tag,
-                        blocked_slot=None,
-                        required=False,
-                    )
                 return
             slot.intentional_stop = True
             log(f'stopping xray-core slot {slot_tag}...')
@@ -2435,7 +2437,6 @@ class XrayManager:
             slot.drain_degraded_checks = 0
             slot.drain_last_latency_ms = None
             slot.drain_last_checked_at = None
-            slot.drain_guarded = False
             slot.drain_new_connections = 0
             slot.drain_stalled_connections = 0
             slot.drain_known_connection_ids.clear()
@@ -2443,12 +2444,6 @@ class XrayManager:
             slot.drain_idle_polls.clear()
             slot.drain_last_info_at = None
             slot.drain_last_info_connections = None
-        if was_guarded:
-            self.sync_router_slot_state(
-                self.active_slot_tag,
-                blocked_slot=None,
-                required=False,
-            )
 
     def force_stop_draining_slot(self, slot_tag: str = '') -> str:
         with self.lock:
@@ -2519,6 +2514,19 @@ class XrayManager:
     def validation_urls(self) -> list[str]:
         return [self.primary_test_url, self.secondary_test_url]
 
+    def test_url_label(self, url: str) -> str:
+        if url == getattr(self, 'primary_test_url', DEFAULT_PRIMARY_TEST_URL):
+            return 'primary_test_url'
+        if url == getattr(self, 'secondary_test_url', DEFAULT_SECONDARY_TEST_URL):
+            return 'secondary_test_url'
+        return 'test_url'
+
+    def format_probe_results(self, results: Iterable[tuple[str, float]]) -> str:
+        return ', '.join(
+            f'{self.test_url_label(url)}={latency:.0f}ms'
+            for url, latency in results
+        )
+
     def probe_proxy_urls(
         self,
         host: str,
@@ -2560,7 +2568,9 @@ class XrayManager:
         successful.sort(key=lambda item: order.get(item[0], len(order)))
         errors.sort(key=lambda item: order.get(item[0], len(order)))
         if not successful:
-            details = '; '.join(f'{url}: {error}' for url, error in errors)
+            details = '; '.join(
+                f'{self.test_url_label(url)}: {error}' for url, error in errors
+            )
             return False, None, [], details or 'both test endpoints failed'
         minimum = min(latency for _url, latency in successful)
         return True, minimum, successful, ''
@@ -2590,7 +2600,7 @@ class XrayManager:
             and self.auto_check_max_latency_ms > 0
             and minimum > self.auto_check_max_latency_ms
         ):
-            checks = ', '.join(f'{url}={latency:.0f}ms' for url, latency in results)
+            checks = self.format_probe_results(results)
             return (
                 False,
                 minimum,
@@ -2632,7 +2642,7 @@ class XrayManager:
             )
             log(
                 f'initial {expected_slot} validation: '
-                + ', '.join(f'{url}={latency:.0f}ms' for url, latency in initial_checks)
+                + self.format_probe_results(initial_checks)
                 + f'; fastest={initial_latency:.0f}ms'
             )
             if (
@@ -2696,7 +2706,6 @@ class XrayManager:
             except Exception as exc:
                 log(f'could not save last-good active config: {exc}', error=True)
             log(f'active outbound: {candidate.name} [{candidate.outbound_tag}] via {expected_slot}')
-            self.sync_router_slot_state(expected_slot, blocked_slot=None, required=False)
         except Exception:
             for slot_tag in reversed(started_slots):
                 self.stop_slot(slot_tag)
@@ -2728,7 +2737,6 @@ class XrayManager:
         standby_tag = ''
         old_slot_tag = ''
         selector_switched = False
-        guard_applied = False
         state_committed = False
         try:
             current_selector = self.selector_status()
@@ -2791,7 +2799,7 @@ class XrayManager:
             measured_latency, checks = self.validate_slot(standby_tag)
             log(
                 f'{standby_tag} passed pre-switch validation: ' +
-                ', '.join(f'{url}={latency:.0f}ms' for url, latency in checks)
+                self.format_probe_results(checks)
                 + f'; fastest={measured_latency:.0f}ms'
             )
 
@@ -2799,12 +2807,6 @@ class XrayManager:
                 self.state['jobs']['switch']['message'] = 'Защита дренируемого слота...'
                 self.save_state()
                 old_slot_running = self.slots[old_slot_tag].running()
-            self.sync_router_slot_state(
-                standby_tag,
-                blocked_slot=old_slot_tag if old_slot_running else None,
-                required=old_slot_running,
-            )
-            guard_applied = old_slot_running
             with self.lock:
                 self.state['jobs']['switch']['message'] = 'Переключение selector...'
                 self.save_state()
@@ -2832,7 +2834,6 @@ class XrayManager:
                 standby.drain_degraded_checks = 0
                 standby.drain_last_latency_ms = None
                 standby.drain_last_checked_at = None
-                standby.drain_guarded = False
                 standby.drain_new_connections = 0
                 standby.drain_stalled_connections = 0
                 standby.drain_known_connection_ids.clear()
@@ -2850,7 +2851,6 @@ class XrayManager:
                 old_slot.drain_degraded_checks = 0
                 old_slot.drain_last_latency_ms = None
                 old_slot.drain_last_checked_at = None
-                old_slot.drain_guarded = old_slot.draining and guard_applied
                 old_slot.drain_new_connections = 0
                 old_slot.drain_stalled_connections = 0
                 old_slot.drain_known_connection_ids.clear()
@@ -2900,21 +2900,8 @@ class XrayManager:
                 )
                 return
             safe_to_stop_standby = not selector_switched
-            if guard_applied and not selector_switched and old_slot_tag:
-                self.sync_router_slot_state(
-                    old_slot_tag,
-                    blocked_slot=None,
-                    required=False,
-                )
-                guard_applied = False
             if selector_switched and not state_committed and old_slot_tag:
                 try:
-                    self.sync_router_slot_state(
-                        old_slot_tag,
-                        blocked_slot=None,
-                        required=True,
-                    )
-                    guard_applied = False
                     self.switch_selector(old_slot_tag)
                     safe_to_stop_standby = True
                     log(
@@ -2940,7 +2927,6 @@ class XrayManager:
                         old_slot.drain_degraded_checks = 0
                         old_slot.drain_last_latency_ms = None
                         old_slot.drain_last_checked_at = None
-                        old_slot.drain_guarded = guard_applied
                         self.save_state()
                     log(
                         f'selector rollback to {old_slot_tag} failed after partial switch: '
@@ -2974,7 +2960,6 @@ class XrayManager:
         if not self.switch_lock.acquire(blocking=False):
             raise RuntimeError('Another outbound switch is already running')
         selector_switched = False
-        guard_applied = False
         state_committed = False
         try:
             with self.lock:
@@ -2989,12 +2974,6 @@ class XrayManager:
 
             with self.lock:
                 failed_running_before_commit = self.slots[failed_slot_tag].running()
-            self.sync_router_slot_state(
-                rollback_slot_tag,
-                blocked_slot=failed_slot_tag if failed_running_before_commit else None,
-                required=failed_running_before_commit,
-            )
-            guard_applied = failed_running_before_commit
             self.switch_selector(rollback_slot_tag)
             selector_switched = True
             switched_at = now_ts()
@@ -3018,7 +2997,6 @@ class XrayManager:
                 rollback_slot.drain_degraded_checks = 0
                 rollback_slot.drain_last_latency_ms = None
                 rollback_slot.drain_last_checked_at = None
-                rollback_slot.drain_guarded = False
                 rollback_slot.drain_new_connections = 0
                 rollback_slot.drain_stalled_connections = 0
                 rollback_slot.drain_known_connection_ids.clear()
@@ -3039,7 +3017,6 @@ class XrayManager:
                 failed_slot.drain_degraded_checks = 0
                 failed_slot.drain_last_latency_ms = None
                 failed_slot.drain_last_checked_at = None
-                failed_slot.drain_guarded = failed_slot.draining
                 failed_slot.drain_new_connections = 0
                 failed_slot.drain_stalled_connections = 0
                 failed_slot.drain_known_connection_ids.clear()
@@ -3071,22 +3048,11 @@ class XrayManager:
             if state_committed:
                 log(f'rollback completed, but bookkeeping failed: {exc}', error=True)
                 return True
-            if guard_applied and not selector_switched:
-                self.sync_router_slot_state(
-                    failed_slot_tag,
-                    blocked_slot=None,
-                    required=False,
-                )
             if selector_switched:
                 try:
                     with self.lock:
                         failed_running = self.slots[failed_slot_tag].running()
                     if failed_running:
-                        self.sync_router_slot_state(
-                            failed_slot_tag,
-                            blocked_slot=None,
-                            required=True,
-                        )
                         self.switch_selector(failed_slot_tag)
                 except Exception as restore_exc:
                     log(
@@ -3246,7 +3212,6 @@ class XrayManager:
                 self.switch_generation += 1
                 slot = self.slots[slot_tag]
                 slot.draining = False
-                slot.drain_guarded = False
                 self.state['last_switch_at'] = switched_at
                 self.state['last_switch_reason'] = reason
                 self.state['auto_check_failures'] = 0
@@ -3260,11 +3225,10 @@ class XrayManager:
                 self.save_latencies()
                 self.save_state()
             self.save_active_config(slot_tag, candidate)
-            self.sync_router_slot_state(slot_tag, blocked_slot=None, required=False)
             log(
                 f'active outbound: {candidate.name} [{candidate.outbound_tag}] via {slot_tag}; '
                 f'single-slot validation: '
-                + ', '.join(f'{url}={latency:.0f}ms' for url, latency in checks)
+                + self.format_probe_results(checks)
                 + f'; fastest={measured_latency:.0f}ms'
             )
         except Exception:
@@ -3288,7 +3252,6 @@ class XrayManager:
                         self.active_slot_tag = slot_tag
                         self.active_candidate_id = old_candidate_id or old_candidate.id
                         self.save_state()
-                    self.sync_router_slot_state(slot_tag, blocked_slot=None, required=False)
                     log(
                         f'single-slot switch failed; restored {old_candidate.name} on {slot_tag}',
                         error=True,
@@ -3484,8 +3447,7 @@ class XrayManager:
                         f'{slot_tag} draining: tracked={total_connections} '
                         f'(tcp={direct_tcp_count}, udp={udp_count}, selector={selector_count}), '
                         f'bytes={total_bytes}, stalled>=10s={len(stalled_ids)}, '
-                        f'new-after-switch={slot.drain_new_connections}, '
-                        f'guard={"on" if slot.drain_guarded else "off"}'
+                        f'new-after-switch={slot.drain_new_connections}'
                     )
                 if self.log_level == 'debug':
                     for item in slot_connections[:10]:
@@ -3591,65 +3553,6 @@ class XrayManager:
             self.slots[saved_slot].candidate = candidate
         return True, candidate
 
-    def choose_subscription_recovery_candidate(self) -> Candidate | None:
-        active = self.slots[self.active_slot_tag].candidate or self.candidate_by_id(
-            self.active_candidate_id
-        )
-        healthy = self.sorted_healthy_candidates(exclude_configured_countries=True)
-        return next(
-            (candidate for candidate in healthy if not self.same_outbound(candidate, active)),
-            None,
-        )
-
-    def wait_for_forced_drain_drop(self, timeout_seconds: int = 15) -> None:
-        """Wait for emergency post-switch confirmation, then force the old slot if needed."""
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline and not self.stop_event.wait(0.5):
-            with self.lock:
-                draining = next(
-                    (tag for tag in SLOT_TAGS if self.slots[tag].draining),
-                    None,
-                )
-            if not draining:
-                return
-        with self.lock:
-            draining = next(
-                (tag for tag in SLOT_TAGS if self.slots[tag].draining),
-                None,
-            )
-        if draining:
-            success, _latency, _checks, error = self.probe_slot_health(self.active_slot_tag)
-            if not success:
-                raise RuntimeError(
-                    f'new active slot was not healthy enough to drop {draining}: {error}'
-                )
-            self.force_stop_draining_slot(draining)
-
-    def retry_subscription_after_route_change(
-        self,
-        first_error: str,
-    ) -> tuple[list[dict[str, Any]], Candidate]:
-        candidate = self.choose_subscription_recovery_candidate()
-        if candidate is None:
-            raise RuntimeError(
-                f'{first_error}; no healthy alternative outbound is available for retry'
-            )
-        log(
-            f'subscription synchronization failed repeatedly; switching to next healthy '
-            f'outbound {candidate.name} before retry',
-            error=True,
-        )
-        self.restart_xray_for(
-            candidate,
-            'subscription recovery after repeated synchronization failure',
-            preempt_draining=True,
-            emergency_failover=True,
-        )
-        if self.dual_slot_enabled:
-            self.wait_for_forced_drain_drop()
-        log('retrying subscription download through the newly active outbound')
-        return self.download_subscription(), candidate
-
     def refresh_subscription_sync(self, *, initial: bool = False) -> None:
         attempt_at = now_ts()
         with self.lock:
@@ -3658,146 +3561,115 @@ class XrayManager:
             old_subscription = self.subscription
             old_candidates = self.candidates
             old_active_id = self.active_candidate_id
-            old_candidate = (
-                self.candidate_by_id(old_active_id) if old_active_id else None
-            ) or self.slots[self.active_slot_tag].candidate
-            old_fingerprint = old_candidate.fingerprint if old_candidate else ''
-            old_name = old_candidate.name if old_candidate else ''
+            old_active_slot_tag = self.active_slot_tag
+            old_active_candidate = (
+                self.slots[old_active_slot_tag].candidate
+                or self.candidate_by_id(old_active_id)
+            )
 
         downloaded = False
-        recovery_candidate: Candidate | None = None
         try:
             configs = self.download_subscription()
-            error = ''
             downloaded = True
+            download_error = ''
             with self.lock:
                 self.state['subscription_consecutive_failures'] = 0
         except Exception as exc:
-            error = str(exc)
+            download_error = str(exc)
             with self.lock:
-                consecutive_failures = int(
+                self.state['subscription_consecutive_failures'] = int(
                     self.state.get('subscription_consecutive_failures') or 0
                 ) + 1
-                self.state['subscription_consecutive_failures'] = consecutive_failures
-                active_running_for_recovery = self.slots[self.active_slot_tag].running()
                 self.save_state()
-            if (
-                consecutive_failures >= 2
-                and not initial
-                and active_running_for_recovery
-            ):
-                try:
-                    configs, recovery_candidate = self.retry_subscription_after_route_change(error)
-                    error = ''
-                    downloaded = True
-                    with self.lock:
-                        self.state['subscription_consecutive_failures'] = 0
-                    log('subscription synchronization succeeded after route recovery')
-                except Exception as recovery_exc:
-                    error = f'{error}; recovery retry failed: {recovery_exc}'
-                    log(error, error=True)
-                    configs = self.load_cached_subscription()
-            else:
-                configs = self.load_cached_subscription()
+            configs = self.load_cached_subscription()
             if not configs:
                 with self.lock:
-                    self.state['subscription_error'] = error
+                    self.state['subscription_error'] = download_error
                     self.state['subscription_last_error_at'] = now_ts()
                     self.save_state()
                 raise
-            if not downloaded:
-                log(f'subscription update failed; using cached subscription: {error}', error=True)
-
-        candidates = self.extract_candidates(configs)
-        if not candidates:
-            raise RuntimeError('No usable proxy outbounds were found in the subscription.')
-
-        with self.lock:
-            self.subscription = configs
-            self.candidates = candidates
-            selected = None
-            preferred_fingerprint = (
-                recovery_candidate.fingerprint if recovery_candidate else old_fingerprint
+            log(
+                f'subscription update failed; using cached subscription: {download_error}',
+                error=True,
             )
-            preferred_name = recovery_candidate.name if recovery_candidate else old_name
-            if preferred_fingerprint:
-                selected = next(
-                    (item for item in candidates if item.fingerprint == preferred_fingerprint),
-                    None,
-                )
-            if selected is None and preferred_name:
-                selected = next((item for item in candidates if item.name == preferred_name), None)
-            if initial:
-                selected = self.choose_initial_candidate(selected)
-            elif selected is None:
-                selected = self.choose_initial_candidate()
-            active_slot_tag = self.active_slot_tag
-            active_running = self.slots[active_slot_tag].running()
-            same_candidate = selected.id == self.active_candidate_id
-
-        force_reload = False
-        with self.lock:
-            active_candidate = self.slots[active_slot_tag].candidate or old_candidate
-            same_outbound = self.same_outbound(selected, active_candidate)
-        if downloaded and not initial and same_outbound and active_running:
-            force_reload = self.runtime_config_differs(active_slot_tag, selected)
-            if force_reload:
-                if self.dual_slot_enabled:
-                    log(
-                        'subscription changed the active outbound configuration; '
-                        'reload is deferred until a different outbound is selected'
-                    )
-                else:
-                    log(
-                        'subscription changed the active outbound configuration; '
-                        'single-slot mode will restart the active slot'
-                    )
-        should_apply = (
-            initial
-            or not same_outbound
-            or not active_running
-            or (force_reload and not self.dual_slot_enabled)
-        )
 
         try:
-            if should_apply:
+            candidates = self.extract_candidates(configs)
+            if not candidates:
+                raise RuntimeError('No usable proxy outbounds were found in the subscription.')
+
+            with self.lock:
+                self.subscription = configs
+                self.candidates = candidates
+                active_slot = self.slots[self.active_slot_tag]
+                active_running = active_slot.running()
+
+                selected: Candidate | None = None
+                if old_active_candidate is not None:
+                    selected = next(
+                        (item for item in candidates if item.id == old_active_candidate.id),
+                        None,
+                    )
+                    if selected is None:
+                        selected = next(
+                            (
+                                item for item in candidates
+                                if item.fingerprint == old_active_candidate.fingerprint
+                            ),
+                            None,
+                        )
+                    if selected is None and old_active_candidate.name:
+                        name_matches = [
+                            item for item in candidates if item.name == old_active_candidate.name
+                        ]
+                        if len(name_matches) == 1:
+                            selected = name_matches[0]
+                if initial:
+                    selected = self.choose_initial_candidate(selected)
+                elif selected is None and not active_running:
+                    selected = self.choose_initial_candidate()
+
+            if initial or not active_running:
+                if selected is None:
+                    raise RuntimeError('Не удалось выбрать outbound для запуска Xray.')
                 self.restart_xray_for(
                     selected,
-                    'initial start' if initial else 'subscription refresh',
-                    force_reload=force_reload,
+                    'initial start' if initial else 'start after subscription refresh',
                 )
             else:
                 with self.lock:
-                    self.active_candidate_id = selected.id
                     active_slot = self.slots[self.active_slot_tag]
-                    active_slot.candidate_id = selected.id
-                    active_slot.candidate_name = selected.name
-                    active_slot.candidate = selected
+                    if selected is not None:
+                        active_slot.candidate = selected
+                        active_slot.candidate_id = selected.id
+                        active_slot.candidate_name = selected.name
+                        self.active_candidate_id = selected.id
+                    else:
+                        # Keep the currently running configuration intact even if
+                        # it disappeared from the refreshed subscription.
+                        self.active_candidate_id = old_active_id
+                    self.rebind_slot_candidates()
                     self.save_state()
+                if selected is not None and self.runtime_config_differs(
+                    self.active_slot_tag, selected
+                ):
+                    log(
+                        'subscription changed the active outbound configuration; '
+                        'the running Xray processes were preserved and the new '
+                        'configuration will be applied on the next explicit selection'
+                    )
+
         except Exception:
             with self.lock:
-                actual_candidate = (
-                    self.slots[self.active_slot_tag].candidate
-                    or self.candidate_by_id(self.active_candidate_id)
-                )
                 self.subscription = old_subscription
                 self.candidates = old_candidates
-                actual_old_candidate = None
-                if actual_candidate is not None:
-                    actual_old_candidate = next(
-                        (
-                            item for item in old_candidates
-                            if self.same_outbound(item, actual_candidate)
-                        ),
-                        None,
-                    )
-                preserved_active_id = (
-                    actual_old_candidate.id if actual_old_candidate else old_active_id
-                )
-                self.active_candidate_id = preserved_active_id
-                self.state['active_candidate_id'] = preserved_active_id
+                self.active_candidate_id = old_active_id
+                self.active_slot_tag = old_active_slot_tag
+                self.state['active_candidate_id'] = old_active_id
+                self.state['active_slot_tag'] = old_active_slot_tag
                 self.state['subscription_error'] = (
-                    'Downloaded subscription could not be applied; previous working subscription was preserved.'
+                    'Загруженную подписку не удалось применить; предыдущая рабочая '
+                    'подписка сохранена.'
                 )
                 self.state['subscription_last_error_at'] = now_ts()
                 self.save_state()
@@ -3812,7 +3684,7 @@ class XrayManager:
                 self.state['subscription_error'] = ''
                 self.state['subscription_consecutive_failures'] = 0
             else:
-                self.state['subscription_error'] = error
+                self.state['subscription_error'] = download_error
                 self.state['subscription_last_error_at'] = now_ts()
             self.save_state()
             self.next_update_at = (
@@ -4109,7 +3981,14 @@ class XrayManager:
                 healthy.sort(key=lambda item: (item[0], item[1]))
 
                 if healthy:
-                    best_latency, _best_name, best_candidate = healthy[0]
+                    preferred_country = getattr(self, 'auto_switch_preferred_country', '')
+                    preferred_healthy = [
+                        item for item in healthy
+                        if preferred_country
+                        and item[2].country_code == preferred_country
+                    ]
+                    selection_pool = preferred_healthy or healthy
+                    best_latency, _best_name, best_candidate = selection_pool[0]
                     with self.lock:
                         effective, selected, _mismatch = self.effective_active_candidate()
                         current = selected or effective
@@ -4124,11 +4003,18 @@ class XrayManager:
                         current_latency - best_latency
                         if isinstance(current_latency, int) else None
                     )
+                    preferred_country_switch = bool(
+                        preferred_healthy
+                        and current is not None
+                        and current.country_code != preferred_country
+                    )
                     should_switch = (
                         current is None
                         or (
                             not self.same_outbound(current, best_candidate)
                             and (
+                                preferred_country_switch
+                                or
                                 not isinstance(current_latency, int)
                                 or ping_difference >= self.auto_switch_min_ping_delta_ms
                             )
@@ -4142,7 +4028,8 @@ class XrayManager:
                         final_message = f'Проверка завершена · выбран {best_candidate.name} ({best_latency} мс)'
                         log(
                             f'{source} latency check switched to {best_candidate.name} '
-                            f'({best_latency} ms, difference {ping_difference} ms)'
+                            f'({best_latency} ms, difference {ping_difference} ms, '
+                            f'preferred_country={preferred_country or "none"})'
                         )
                     elif current is not None and self.same_outbound(current, best_candidate):
                         final_message = f'Проверка завершена · текущий outbound оптимален ({current_latency} мс)'
@@ -4181,7 +4068,7 @@ class XrayManager:
         """Stop a stale one-connection drain after repeated bad full scans.
 
         The same auto_check_failures setting is intentionally used for active-slot
-        failover and for this drain safeguard. Only complete list scans count;
+        failover and for drain tracking. Only complete list scans count;
         single-outbound tests do not alter the counter.
         """
         to_stop: list[tuple[str, int, str]] = []
@@ -4356,6 +4243,15 @@ class XrayManager:
                     continue
                 healthy.append((latency_ms, candidate))
         healthy.sort(key=lambda item: (item[0], item[1].name.casefold()))
+        preferred_country = getattr(self, 'auto_switch_preferred_country', '')
+        if preferred_country:
+            preferred = [
+                item for item in healthy if item[1].country_code == preferred_country
+            ]
+            if preferred:
+                healthy = preferred + [
+                    item for item in healthy if item[1].country_code != preferred_country
+                ]
         return [item[1] for item in healthy]
 
     def choose_failover_candidate(self) -> Candidate | None:
@@ -4414,9 +4310,7 @@ class XrayManager:
             try:
                 success, latency_ms, checks, error = self.check_active_tunnel()
                 checked_at = now_ts()
-                check_details = ', '.join(
-                    f'{url}={latency:.0f}ms' for url, latency in checks
-                ) or 'both endpoints failed'
+                check_details = self.format_probe_results(checks) or 'both endpoints failed'
                 with self.lock:
                     self.state['auto_check_last_at'] = checked_at
                     if success:
@@ -4506,17 +4400,11 @@ class XrayManager:
         if not self.switch_lock.acquire(blocking=False):
             return False
         try:
-            self.sync_router_slot_state(
-                rollback_slot_tag,
-                blocked_slot=None,
-                required=True,
-            )
             self.switch_selector(rollback_slot_tag)
             with self.lock:
                 failed_slot = self.slots[failed_slot_tag]
                 failed_slot.process = None
                 failed_slot.draining = False
-                failed_slot.drain_guarded = False
                 rollback_slot.draining = False
                 rollback_slot.drain_started_at = None
                 rollback_slot.drain_zero_since = None
@@ -4690,7 +4578,6 @@ class XrayManager:
                     'drain_degraded_checks': slot.drain_degraded_checks,
                     'drain_last_latency_ms': slot.drain_last_latency_ms,
                     'drain_last_checked_at': slot.drain_last_checked_at,
-                    'drain_guarded': slot.drain_guarded,
                     'drain_new_connections': slot.drain_new_connections,
                     'drain_stalled_connections': slot.drain_stalled_connections,
                     'observed_outbound_tag': slot.observed_outbound_tag,
@@ -4698,6 +4585,7 @@ class XrayManager:
                 }
             return {
                 'version': ADDON_VERSION,
+                'home_assistant_host': getattr(self, 'home_assistant_host', 'host'),
                 'release_notes': release_notes_payload(),
                 'xray_version': self.xray_version(),
                 'started_at': self.started_at,
@@ -4732,6 +4620,7 @@ class XrayManager:
                 'auto_checker': {
                     'enabled': self.auto_checker_enabled,
                     'switch_to_best': self.auto_switch_best_enabled,
+                    'preferred_country': getattr(self, 'auto_switch_preferred_country', ''),
                     'excluded': self.auto_switch_excluded,
                     'min_ping_delta_ms': self.auto_switch_min_ping_delta_ms,
                     'interval_seconds': self.auto_check_interval_seconds,
@@ -4973,6 +4862,12 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
             if path.endswith('/api/refresh'):
                 accepted = self.manager.request_refresh()
                 self.send_json({'ok': accepted}, 202 if accepted else 409)
+                return
+            if path.endswith('/api/mode'):
+                desired = payload.get('dual_slot_enabled')
+                if not isinstance(desired, bool):
+                    raise ValueError('Не указан режим слотов')
+                self.send_json(self.manager.set_slot_mode(desired))
                 return
             if path.endswith('/api/settings'):
                 changes = payload.get('changes') if isinstance(payload.get('changes'), dict) else payload

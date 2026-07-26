@@ -41,6 +41,9 @@ configuration:
   auto_switch_best_enabled:
     name: Выбирать лучший outbound
     description: После полной проверки переключаться на достаточно более быстрый вариант.
+  auto_switch_preferred_country:
+    name: Предпочитаемая страна
+    description: ISO-код страны с приоритетом при выборе лучшего outbound; если подходящих серверов этой страны нет, используются все остальные.
   auto_switch_excluded:
     name: Исключить из выбора
     description: ISO-коды стран и фрагменты строк через запятую; всегда исключаются из автоматического выбора. Для ручного выбора скрытого outbound снимите галочку «Скрыть исключенные» в UI.
@@ -75,7 +78,7 @@ configuration:
     name: Дополнительный URL проверки
     description: Второй независимый контрольный адрес; сохраняется минимальная успешная задержка из двух запросов.
   selector_control_enabled:
-    name: Управление selector
+    name: Управление внешним selector
     description: Переключать внешний selector между xray-a и xray-b.
   selector_api_url:
     name: URL selector API
@@ -100,7 +103,7 @@ configuration:
     description: 0 — ждать естественно; другое значение принудительно остановит слот по таймауту.
   router_control_enabled:
     name: Управление OpenWrt
-    description: Управлять UCI-правилом firewall и защитой дренируемого слота через SSH; требуется для безопасного двухслотового переключения.
+    description: Управлять UCI-правилом firewall через SSH и восстанавливать выбранное состояние после внешней перезагрузки правил.
   router_host:
     name: Адрес OpenWrt
     description: IP-адрес или имя SSH-узла с правилом firewall.
@@ -125,12 +128,9 @@ configuration:
   router_firewall_rule:
     name: Имя правила firewall
     description: Имя UCI-правила, которое переключает кнопка play/pause.
-  router_xray_host:
-    name: Адрес Xray Proxy Manager
-    description: LAN-IP узла Home Assistant, к которому OpenWrt подключается по портам xray-a и xray-b; используется защитой дренируемого слота.
   router_status_interval_seconds:
     name: Опрос OpenWrt, с
-    description: Интервал проверки UCI-правила и nftables guard; после управляемого reload защита восстанавливается немедленно.
+    description: Интервал проверки UCI-правила; если sing-box или firewall изменил его состояние, выбранное в UI состояние восстанавливается автоматически.
   ui_sort:
     name: Сортировка списка
     description: Начальный порядок outbound в веб-интерфейсе.

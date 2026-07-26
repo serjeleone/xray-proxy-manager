@@ -1,5 +1,5 @@
 name: Xray Proxy Manager
-version: "0.7.0"
+version: "0.7.1"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
 description: "Управление Xray через один или два SOCKS5-слота, проверка outbound и безопасное переключение"
@@ -31,17 +31,20 @@ options:
   subscription_url: ""
   config_index: 0
   update_interval_hours: 1
-  socks_tcp_a: 10808
-  socks_tcp_b: 10809
-  socks_udp_a: true
-  socks_udp_b: true
+  user_agent: "XPM-HA-App"
+
   dual_slot_enabled: true
+  socks_tcp_a: 10808
+  socks_udp_a: true
+  socks_tcp_b: 10809
+  socks_udp_b: true
   proxy_username: ""
   proxy_password: ""
   log_level: "warning"
-  user_agent: "XPM-HA-App"
+
   auto_checker_enabled: true
   auto_switch_best_enabled: true
+  auto_switch_preferred_country: ""
   auto_switch_excluded: "RU"
   auto_switch_min_ping_delta_ms: 100
   auto_check_interval_seconds: 60
@@ -53,6 +56,13 @@ options:
   latency_test_parallelism: 0
   primary_test_url: "https://www.gstatic.com/generate_204"
   secondary_test_url: "https://cp.cloudflare.com/generate_204"
+
+  ui_sort: "ping-asc"
+  ui_protocol_filter: "all"
+  ui_max_ping_ms: 1000
+  ui_hide_unavailable: false
+  ui_hide_excluded: true
+
   selector_control_enabled: false
   selector_api_url: "http://192.168.0.1:9090"
   selector_api_secret: ""
@@ -61,6 +71,7 @@ options:
   drain_quiet_seconds: 30
   drain_poll_interval_seconds: 2
   drain_timeout_minutes: 0
+
   router_control_enabled: true
   router_host: "192.168.0.1"
   router_ssh_port: 22
@@ -70,28 +81,25 @@ options:
   router_ssh_key_path: ""
   router_ssh_password: ""
   router_firewall_rule: "mark_domains"
-  router_xray_host: "192.168.1.2"
   router_status_interval_seconds: 10
-  ui_sort: "ping-asc"
-  ui_protocol_filter: "all"
-  ui_max_ping_ms: 1000
-  ui_hide_unavailable: false
-  ui_hide_excluded: true
 schema:
   subscription_url: str
   config_index: int(0,)
   update_interval_hours: int(0,720)
-  socks_tcp_a: port
-  socks_tcp_b: port
-  socks_udp_a: bool
-  socks_udp_b: bool
+  user_agent: str
+
   dual_slot_enabled: bool
+  socks_tcp_a: port
+  socks_udp_a: bool
+  socks_tcp_b: port
+  socks_udp_b: bool
   proxy_username: str?
   proxy_password: password?
   log_level: list(debug|info|warning|error|none)
-  user_agent: str
+
   auto_checker_enabled: bool
   auto_switch_best_enabled: bool
+  auto_switch_preferred_country: str?
   auto_switch_excluded: str
   auto_switch_min_ping_delta_ms: int(0,10000)
   auto_check_interval_seconds: int(10,86400)
@@ -103,6 +111,13 @@ schema:
   latency_test_parallelism: int(0,32)
   primary_test_url: str
   secondary_test_url: str
+
+  ui_sort: list(name-asc|name-desc|ping-asc|ping-desc|protocol-asc|protocol-desc)
+  ui_protocol_filter: str
+  ui_max_ping_ms: int(0,10000)
+  ui_hide_unavailable: bool
+  ui_hide_excluded: bool
+
   selector_control_enabled: bool
   selector_api_url: str
   selector_api_secret: password?
@@ -111,6 +126,7 @@ schema:
   drain_quiet_seconds: int(5,)
   drain_poll_interval_seconds: int(1,)
   drain_timeout_minutes: int(0,1440)
+
   router_control_enabled: bool
   router_host: str
   router_ssh_port: port
@@ -120,10 +136,4 @@ schema:
   router_ssh_key_path: str?
   router_ssh_password: password?
   router_firewall_rule: str
-  router_xray_host: str
   router_status_interval_seconds: int(5,)
-  ui_sort: list(name-asc|name-desc|ping-asc|ping-desc|protocol-asc|protocol-desc)
-  ui_protocol_filter: str
-  ui_max_ping_ms: int(0,10000)
-  ui_hide_unavailable: bool
-  ui_hide_excluded: bool
