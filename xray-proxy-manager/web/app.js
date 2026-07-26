@@ -515,6 +515,7 @@ function render(payload) {
   const blueGreen = payload.blue_green || {};
   const activeSlot = blueGreen.slots?.[blueGreen.active_slot];
   const metaParts = active ? [active.protocol, protocolMeta(active)] : ['Ожидание трафика'];
+  metaParts.push(blueGreen.mode === 'single' ? 'однослотовый режим' : 'двухслотовый режим');
   if (activeSlot) metaParts.push(blueGreen.active_slot, `SOCKS ${activeSlot.socks_tcp}`);
   let activeMeta = metaParts.join(' · ');
   const drainingSlot = Object.values(blueGreen.slots || {}).find((slot) => slot.draining);
@@ -554,7 +555,11 @@ function render(payload) {
   $('autoCheckerMeta').textContent = `${checker.interval_seconds}/${checker.best_check_interval_seconds} сек. · порог ${checker.failure_threshold} · ошибок ${checker.current_failures}${checkerMode}${bestMode}. ${lastChecks}${lastError}`;
 
   const subscription = payload.subscription || {};
-  if (subscription.error) {
+  const subscriptionFailed = Boolean(subscription.error);
+  $('subscriptionState').classList.toggle('error-state', subscriptionFailed);
+  $('subscriptionMeta').classList.toggle('error-state', subscriptionFailed);
+  $('refreshButton').classList.toggle('subscription-error', subscriptionFailed);
+  if (subscriptionFailed) {
     $('subscriptionState').textContent = 'Ошибка синхронизации';
     $('subscriptionMeta').textContent = `${subscription.error} · ${formatRelative(subscription.last_error_at || subscription.last_attempt_at)}`;
   } else if (subscription.last_success_at) {

@@ -187,6 +187,15 @@ button:hover:not(:disabled)::after { opacity: 1; }
 .button.primary:hover:not(:disabled) { background: var(--spotify-hover); }
 .button.secondary { background: #343434; border: 1px solid rgba(255,255,255,.08); }
 .button.secondary:hover:not(:disabled) { background: #414141; }
+.button.secondary.subscription-error {
+  color: #251602;
+  background: var(--amber);
+  border-color: rgba(255,255,255,.12);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.04), 0 8px 24px rgba(245,166,35,.22);
+}
+.button.secondary.subscription-error:hover:not(:disabled) { background: var(--amber-hover); }
+#subscriptionState.error-state { color: #ff5962; }
+#subscriptionMeta.error-state { color: #ff9aa4; }
 .button.compact { min-height: 34px; padding: 0 13px 1px; font-size: .78rem; background: #303030; align-self: flex-start; }
 .button.compact.dirty { color: #fff; background: var(--bad); box-shadow: 0 0 0 1px rgba(255,255,255,.05), 0 7px 20px rgba(227,27,35,.17); }
 .button.compact.dirty:hover:not(:disabled) { background: var(--bad-hover); }

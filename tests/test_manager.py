@@ -54,7 +54,6 @@ class ManagerLogicTests(unittest.TestCase):
             "xray-a": manager.XraySlot("xray-a", 10808, True, Path("/tmp/a.json")),
             "xray-b": manager.XraySlot("xray-b", 10809, False, Path("/tmp/b.json")),
         }
-        instance.listen_lan = True
         instance.log_level = "warning"
         instance.proxy_username = ""
         instance.proxy_password = ""
@@ -76,6 +75,7 @@ class ManagerLogicTests(unittest.TestCase):
         )
         config_a = instance.build_config(selected, slot_tag="xray-a")
         config_b = instance.build_config(selected, slot_tag="xray-b")
+        self.assertEqual(config_a["inbounds"][0]["listen"], "0.0.0.0")
         self.assertEqual(config_a["inbounds"][0]["port"], 10808)
         self.assertIs(config_a["inbounds"][0]["settings"]["udp"], True)
         self.assertEqual(config_b["inbounds"][0]["port"], 10809)
@@ -87,6 +87,7 @@ class ManagerLogicTests(unittest.TestCase):
         active = candidate("active", "198.51.100.30")
         instance = manager.XrayManager.__new__(manager.XrayManager)
         instance.lock = threading.RLock()
+        instance.dual_slot_enabled = True
         instance.candidates = [refreshed, active]
         instance.latencies = {}
         instance.active_slot_tag = "xray-b"
@@ -115,7 +116,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.drain_quiet_seconds = 30
         instance.drain_timeout_minutes = 0
         instance.primary_test_url = "https://primary.example/"
-        instance.secondary_check_url = "https://secondary.example/"
+        instance.secondary_test_url = "https://secondary.example/"
         instance._xray_version_cache = "Xray test"
         instance.slots = {
             "xray-a": manager.XraySlot(
@@ -147,6 +148,7 @@ class ManagerLogicTests(unittest.TestCase):
         other = candidate("other", "198.51.100.41")
         instance = manager.XrayManager.__new__(manager.XrayManager)
         instance.lock = threading.RLock()
+        instance.dual_slot_enabled = True
         instance.candidates = [other, refreshed]
         instance.latencies = {}
         instance.active_slot_tag = "xray-a"
@@ -175,7 +177,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.drain_quiet_seconds = 30
         instance.drain_timeout_minutes = 0
         instance.primary_test_url = "https://primary.example/"
-        instance.secondary_check_url = "https://secondary.example/"
+        instance.secondary_test_url = "https://secondary.example/"
         instance._xray_version_cache = "Xray test"
         instance.slots = {
             "xray-a": manager.XraySlot(
@@ -245,12 +247,12 @@ class ManagerLogicTests(unittest.TestCase):
             "health_check_url": manager.DEFAULT_PRIMARY_TEST_URL,
         })
         self.assertEqual(primary, manager.DEFAULT_PRIMARY_TEST_URL)
-        self.assertEqual(secondary, manager.DEFAULT_SECONDARY_CHECK_URL)
+        self.assertEqual(secondary, manager.DEFAULT_SECONDARY_TEST_URL)
 
     def test_new_test_url_names_take_precedence_over_legacy_names(self) -> None:
         primary, secondary = manager.resolve_test_urls({
             "primary_test_url": "https://primary.example/",
-            "secondary_check_url": "https://secondary.example/",
+            "secondary_test_url": "https://secondary.example/",
             "latency_test_url": "https://legacy-primary.example/",
             "health_check_url": "https://legacy-secondary.example/",
         })
@@ -290,6 +292,7 @@ class ManagerLogicTests(unittest.TestCase):
         new = candidate("new", "198.51.100.3")
         instance = manager.XrayManager.__new__(manager.XrayManager)
         instance.selector_control_enabled = True
+        instance.dual_slot_enabled = True
         instance.selector_reconciliation_pending = False
         instance.switch_lock = threading.Lock()
         instance.lock = threading.RLock()
@@ -318,7 +321,16 @@ class ManagerLogicTests(unittest.TestCase):
         instance.candidates = [active, old, new]
         instance.selector_status = lambda: "xray-a"
         switched: list[str] = []
-        instance.switch_selector = switched.append
+        switch_events: list[tuple[str, str, str | None]] = []
+        def record_selector(tag: str) -> None:
+            switched.append(tag)
+            switch_events.append(("selector", tag, None))
+        def record_guard(expected: str, *, blocked_slot=None, required=False) -> bool:
+            switch_events.append(("guard", expected, blocked_slot))
+            return True
+        instance.switch_selector = record_selector
+        instance.sync_router_slot_state = record_guard
+        instance.capture_drain_connection_baseline = lambda *_args, **_kwargs: None
         instance.validate_slot = lambda _tag: (100.0, [("https://example.com", 100.0)])
         instance.save_state = lambda: None
         instance.save_latencies = lambda: None
@@ -357,6 +369,9 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(instance.active_slot_tag, "xray-b")
         self.assertEqual(instance.active_candidate_id, new.id)
         self.assertIs(instance.slots["xray-a"].draining, True)
+        guard_index = switch_events.index(("guard", "xray-b", "xray-a"))
+        selector_index = switch_events.index(("selector", "xray-b", None))
+        self.assertLess(guard_index, selector_index)
 
     def test_startup_prefers_cached_faster_candidate_over_remembered(self) -> None:
         remembered = candidate("remembered", "198.51.100.60")
@@ -495,7 +510,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.auto_check_timeout_seconds = 12
         instance.auto_check_max_latency_ms = 500
         instance.primary_test_url = "https://primary.example/"
-        instance.secondary_check_url = "https://secondary.example/"
+        instance.secondary_test_url = "https://secondary.example/"
         instance.slots = {
             "xray-a": manager.XraySlot(
                 "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess()
@@ -503,7 +518,7 @@ class ManagerLogicTests(unittest.TestCase):
         }
         values = {
             instance.primary_test_url: (True, 620.0, ""),
-            instance.secondary_check_url: (True, 155.0, ""),
+            instance.secondary_test_url: (True, 155.0, ""),
         }
         instance.proxy_curl = lambda _host, _port, url, _timeout, **_kwargs: values[url]
 
@@ -520,7 +535,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.auto_check_timeout_seconds = 12
         instance.auto_check_max_latency_ms = 500
         instance.primary_test_url = "https://primary.example/"
-        instance.secondary_check_url = "https://secondary.example/"
+        instance.secondary_test_url = "https://secondary.example/"
         instance.slots = {
             "xray-a": manager.XraySlot(
                 "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess()
@@ -528,7 +543,7 @@ class ManagerLogicTests(unittest.TestCase):
         }
         values = {
             instance.primary_test_url: (False, None, "timeout"),
-            instance.secondary_check_url: (True, 180.0, ""),
+            instance.secondary_test_url: (True, 180.0, ""),
         }
         instance.proxy_curl = lambda _host, _port, url, _timeout, **_kwargs: values[url]
 
@@ -536,7 +551,7 @@ class ManagerLogicTests(unittest.TestCase):
 
         self.assertTrue(success)
         self.assertEqual(latency_ms, 180.0)
-        self.assertEqual(checks, [(instance.secondary_check_url, 180.0)])
+        self.assertEqual(checks, [(instance.secondary_test_url, 180.0)])
         self.assertEqual(error, "")
 
     def test_active_probe_rejects_when_fastest_endpoint_exceeds_limit(self) -> None:
@@ -545,7 +560,7 @@ class ManagerLogicTests(unittest.TestCase):
         instance.auto_check_timeout_seconds = 12
         instance.auto_check_max_latency_ms = 500
         instance.primary_test_url = "https://primary.example/"
-        instance.secondary_check_url = "https://secondary.example/"
+        instance.secondary_test_url = "https://secondary.example/"
         instance.slots = {
             "xray-a": manager.XraySlot(
                 "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess()
@@ -553,7 +568,7 @@ class ManagerLogicTests(unittest.TestCase):
         }
         values = {
             instance.primary_test_url: (True, 620.0, ""),
-            instance.secondary_check_url: (True, 710.0, ""),
+            instance.secondary_test_url: (True, 710.0, ""),
         }
         instance.proxy_curl = lambda _host, _port, url, _timeout, **_kwargs: values[url]
 
@@ -610,6 +625,390 @@ class ManagerLogicTests(unittest.TestCase):
             instance.stop_event.wait = original_wait
 
         self.assertEqual(stopped, ["xray-a"])
+
+    def test_manager_restores_expected_selector_while_slot_is_running(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.switch_lock = threading.Lock()
+        instance.active_slot_tag = "xray-b"
+        instance.active_candidate_id = "active"
+        instance.selector_reconciliation_pending = False
+        instance.switch_generation = 0
+        instance.state = {}
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess(), draining=True
+            ),
+            "xray-b": manager.XraySlot(
+                "xray-b", 10809, True, Path("/tmp/b"), process=DummyProcess()
+            ),
+        }
+        instance.selector_status = lambda: "xray-a"
+        restored: list[str] = []
+        instance.switch_selector = restored.append
+        instance.save_state = lambda: None
+
+        instance.restore_selector_alignment("xray-a")
+
+        self.assertEqual(restored, ["xray-b"])
+        self.assertEqual(instance.active_slot_tag, "xray-b")
+
+    def test_manager_adopts_selector_only_when_expected_slot_is_stopped(self) -> None:
+        live = candidate("live", "198.51.100.101")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.switch_lock = threading.Lock()
+        instance.active_slot_tag = "xray-b"
+        instance.active_candidate_id = "stopped"
+        instance.selector_reconciliation_pending = False
+        instance.switch_generation = 0
+        instance.state = {}
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess(),
+                candidate=live, candidate_id=live.id, candidate_name=live.name,
+            ),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
+        }
+        instance.selector_status = lambda: "xray-a"
+        instance.candidate_by_id = lambda value: live if value == live.id else None
+        instance.save_active_config = lambda *_args: None
+        instance.save_state = lambda: None
+        instance.sync_router_slot_state = lambda *_args, **_kwargs: True
+        switched: list[str] = []
+        instance.switch_selector = switched.append
+
+        instance.restore_selector_alignment("xray-a")
+
+        self.assertEqual(switched, [])
+        self.assertEqual(instance.active_slot_tag, "xray-a")
+        self.assertEqual(instance.active_candidate_id, live.id)
+
+    def test_selector_poll_interval_is_dynamic(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.selector_control_enabled = True
+        instance.selector_status_interval_seconds = 10
+        instance.selector_state = {"available": True}
+        instance.slots = {
+            "xray-a": manager.XraySlot("xray-a", 10808, True, Path("/tmp/a")),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
+        }
+
+        self.assertEqual(instance.selector_status_wait_seconds(), 10)
+        instance.selector_state["available"] = False
+        self.assertEqual(instance.selector_status_wait_seconds(), 1)
+        instance.selector_state["available"] = True
+        instance.slots["xray-a"].draining = True
+        self.assertEqual(instance.selector_status_wait_seconds(), 1)
+
+    def test_selector_api_recovery_force_writes_expected_slot_even_when_already_reported(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.switch_lock = threading.Lock()
+        instance.selector_control_enabled = True
+        instance.selector_reconciliation_pending = False
+        instance.active_slot_tag = "xray-b"
+        instance.selector_state = {
+            "available": False,
+            "last_checked_at": 1,
+            "connections_supported": True,
+        }
+        instance.slots = {
+            "xray-a": manager.XraySlot("xray-a", 10808, True, Path("/tmp/a")),
+            "xray-b": manager.XraySlot(
+                "xray-b", 10809, True, Path("/tmp/b"), process=DummyProcess()
+            ),
+        }
+        instance.selector_status = lambda: "xray-b"
+        written: list[str] = []
+        instance.switch_selector = written.append
+        instance.reconcile_startup_selector = lambda _current: None
+        instance.restore_selector_alignment = lambda _current: None
+        instance.sync_router_slot_state = lambda *_args, **_kwargs: True
+        instance.selector_connections = lambda: []
+
+        instance.refresh_selector_status()
+
+        self.assertEqual(written, ["xray-b"])
+        self.assertTrue(instance.selector_state["available"])
+        self.assertEqual(instance.selector_state["current"], "xray-b")
+
+    def test_selector_api_recovery_does_not_interfere_with_switch_transaction(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.switch_lock = threading.Lock()
+        instance.switch_lock.acquire()
+        instance.selector_control_enabled = True
+        instance.selector_reconciliation_pending = False
+        instance.active_slot_tag = "xray-a"
+        instance.selector_state = {
+            "available": False,
+            "last_checked_at": 1,
+            "connections_supported": True,
+        }
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess()
+            ),
+            "xray-b": manager.XraySlot(
+                "xray-b", 10809, True, Path("/tmp/b"), process=DummyProcess()
+            ),
+        }
+        instance.selector_status = lambda: "xray-b"
+        written: list[str] = []
+        instance.switch_selector = written.append
+        instance.reconcile_startup_selector = lambda _current: None
+        instance.restore_selector_alignment = lambda _current: None
+        instance.sync_router_slot_state = lambda *_args, **_kwargs: True
+        instance.selector_connections = lambda: []
+        try:
+            instance.refresh_selector_status()
+        finally:
+            instance.switch_lock.release()
+
+        self.assertEqual(written, [])
+
+    def test_router_drain_guard_blocks_only_new_connections_to_old_slot(self) -> None:
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.router_xray_ip = manager.ipaddress.ip_address("192.0.2.10")
+        instance.slots = {
+            "xray-a": manager.XraySlot("xray-a", 10808, True, Path("/tmp/a")),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
+        }
+
+        script = instance.router_slot_state_remote_script("xray-b", "xray-a")
+
+        self.assertIn("ct state new tcp dport 10808", script)
+        self.assertIn("ct state new udp dport 10808", script)
+        self.assertNotIn("dport 10809", script)
+        self.assertIn("active-slot", script)
+        self.assertIn("xray-b", script)
+
+    def test_active_exit_rollback_clears_old_guard_before_selector_switch(self) -> None:
+        rollback_candidate = candidate("rollback", "198.51.100.105")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.switch_lock = threading.Lock()
+        instance.dual_slot_enabled = True
+        instance.active_slot_tag = "xray-b"
+        instance.active_candidate_id = "failed"
+        instance.switch_generation = 1
+        instance.state = {
+            "last_switch_at": None,
+            "last_switch_reason": "",
+            "auto_check_failures": 2,
+            "auto_check_last_error": "failed",
+        }
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess(),
+                candidate=rollback_candidate, candidate_id=rollback_candidate.id,
+                candidate_name=rollback_candidate.name, draining=True, drain_guarded=True,
+            ),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
+        }
+        events: list[tuple[str, object]] = []
+        instance.sync_router_slot_state = lambda expected, **kwargs: (
+            events.append(("guard", expected, kwargs.get("blocked_slot"))) or True
+        )
+        instance.switch_selector = lambda tag: events.append(("selector", tag))
+        instance.save_state = lambda: None
+        instance.save_active_config = lambda *_args: None
+        instance.candidate_by_id = lambda value: (
+            rollback_candidate if value == rollback_candidate.id else None
+        )
+
+        restored = instance.rollback_after_active_exit("xray-b")
+
+        self.assertTrue(restored)
+        self.assertEqual(
+            events[:2],
+            [("guard", "xray-a", None), ("selector", "xray-a")],
+        )
+        self.assertEqual(instance.active_slot_tag, "xray-a")
+
+    def test_single_slot_switch_stops_existing_slot_before_restart(self) -> None:
+        old = candidate("old", "198.51.100.110")
+        new = candidate("new", "198.51.100.111")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.switch_lock = threading.Lock()
+        instance.selector_control_enabled = False
+        instance.active_slot_tag = "xray-a"
+        instance.active_candidate_id = old.id
+        instance.switch_generation = 0
+        instance.latencies = {}
+        instance.state = {
+            "jobs": {"switch": {"running": False, "message": ""}},
+            "last_switch_at": None,
+            "last_switch_reason": "",
+            "auto_check_failures": 0,
+            "auto_check_last_error": "",
+        }
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/nonexistent-xpm-a.json"),
+                process=DummyProcess(), candidate=old,
+                candidate_id=old.id, candidate_name=old.name,
+            ),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/nonexistent-xpm-b.json")),
+        }
+        instance.candidates = [old, new]
+        instance.candidate_by_id = lambda value: next(
+            (item for item in instance.candidates if item.id == value), None
+        )
+        events: list[tuple[str, str]] = []
+        def stop_slot(tag: str) -> None:
+            events.append(("stop", tag))
+            instance.slots[tag].process = None
+        def start_slot(tag: str, selected=None) -> None:
+            events.append(("start", tag))
+            slot = instance.slots[tag]
+            slot.process = DummyProcess()
+            if selected is not None:
+                slot.candidate = selected
+                slot.candidate_id = selected.id
+                slot.candidate_name = selected.name
+        prepared_path = Path("/tmp/xpm-test-prepared.json")
+        def prepare_slot_config(tag: str, selected):
+            events.append(("prepare", tag))
+            return prepared_path, True
+        def install_prepared_slot_config(tag: str, selected, _path: Path) -> None:
+            events.append(("install", tag))
+            slot = instance.slots[tag]
+            slot.candidate = selected
+            slot.candidate_id = selected.id
+            slot.candidate_name = selected.name
+        instance.stop_slot = stop_slot
+        instance.start_slot = start_slot
+        instance.prepare_slot_config = prepare_slot_config
+        instance.install_prepared_slot_config = install_prepared_slot_config
+        instance.validate_slot = lambda _tag: (125.0, [("https://example.test", 125.0)])
+        instance.save_state = lambda: None
+        instance.save_latencies = lambda: None
+        instance.save_active_config = lambda *_args: None
+        instance.sync_router_slot_state = lambda *_args, **_kwargs: True
+
+        instance.switch_candidate_single_slot(new, "manual")
+
+        self.assertEqual(
+            events[:4],
+            [
+                ("prepare", "xray-a"),
+                ("stop", "xray-a"),
+                ("install", "xray-a"),
+                ("start", "xray-a"),
+            ],
+        )
+        self.assertEqual(instance.active_slot_tag, "xray-a")
+        self.assertEqual(instance.active_candidate_id, new.id)
+
+    def test_legacy_test_url_keys_migrate_and_are_removed(self) -> None:
+        options = {
+            "latency_test_url": "https://primary.example/",
+            "secondary_check_url": "https://secondary.example/",
+        }
+
+        changed = manager.migrate_test_url_options(options)
+
+        self.assertTrue(changed)
+        self.assertEqual(options["primary_test_url"], "https://primary.example/")
+        self.assertEqual(options["secondary_test_url"], "https://secondary.example/")
+        self.assertNotIn("latency_test_url", options)
+        self.assertNotIn("secondary_check_url", options)
+
+    def test_repeated_subscription_failure_retries_through_next_healthy_outbound(self) -> None:
+        alternative = candidate("alternative", "198.51.100.120")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.dual_slot_enabled = True
+        instance.choose_subscription_recovery_candidate = lambda: alternative
+        calls: list[tuple[str, object]] = []
+        def restart(selected, reason, **kwargs):
+            calls.append(("restart", selected.id, reason, kwargs))
+        instance.restart_xray_for = restart
+        instance.wait_for_forced_drain_drop = lambda: calls.append(("drop", True))
+        instance.download_subscription = lambda: [{"outbounds": []}]
+
+        result, selected = instance.retry_subscription_after_route_change("first failure")
+
+        self.assertEqual(result, [{"outbounds": []}])
+        self.assertIs(selected, alternative)
+        self.assertEqual(calls[0][0:2], ("restart", alternative.id))
+        self.assertTrue(calls[0][3]["preempt_draining"])
+        self.assertTrue(calls[0][3]["emergency_failover"])
+        self.assertEqual(calls[1], ("drop", True))
+
+    def test_subscription_route_recovery_does_not_switch_back_to_failed_outbound(self) -> None:
+        failed = candidate("failed", "198.51.100.130", fingerprint="failed-fp")
+        recovery = candidate("recovery", "198.51.100.131", fingerprint="recovery-fp")
+        refreshed_failed = candidate(
+            "failed-new-id", "198.51.100.130", fingerprint="failed-fp"
+        )
+        refreshed_recovery = candidate(
+            "recovery-new-id", "198.51.100.131", fingerprint="recovery-fp"
+        )
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.dual_slot_enabled = True
+        instance.stop_event = threading.Event()
+        instance.update_interval_hours = 1
+        instance.next_update_at = None
+        instance.subscription = [{"old": True}]
+        instance.candidates = [failed, recovery]
+        instance.active_candidate_id = failed.id
+        instance.active_slot_tag = "xray-a"
+        instance.state = {
+            "subscription_consecutive_failures": 1,
+            "jobs": {"refresh": {"running": False, "message": ""}},
+        }
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess(),
+                candidate=failed, candidate_id=failed.id, candidate_name=failed.name,
+            ),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
+        }
+        attempts = iter([
+            RuntimeError("route failed"),
+            [{"new": True}],
+        ])
+
+        def download():
+            result = next(attempts)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        instance.download_subscription = download
+        instance.load_cached_subscription = lambda: [{"old": True}]
+        instance.extract_candidates = lambda _configs: [refreshed_failed, refreshed_recovery]
+        instance.choose_subscription_recovery_candidate = lambda: recovery
+        instance.wait_for_forced_drain_drop = lambda: None
+        instance.runtime_config_differs = lambda *_args: False
+        instance.save_state = lambda: None
+        restart_calls: list[str] = []
+
+        def restart(selected, _reason, **_kwargs):
+            restart_calls.append(selected.fingerprint)
+            slot = instance.slots[instance.active_slot_tag]
+            slot.candidate = selected
+            slot.candidate_id = selected.id
+            slot.candidate_name = selected.name
+            instance.active_candidate_id = selected.id
+
+        instance.restart_xray_for = restart
+        original_atomic_write = manager.atomic_write_json
+        manager.atomic_write_json = lambda *_args, **_kwargs: None
+        try:
+            instance.refresh_subscription_sync(initial=False)
+        finally:
+            manager.atomic_write_json = original_atomic_write
+
+        self.assertEqual(restart_calls, ["recovery-fp"])
+        self.assertEqual(instance.active_candidate_id, refreshed_recovery.id)
+        self.assertIs(instance.slots["xray-a"].candidate, refreshed_recovery)
+        self.assertEqual(instance.state["subscription_consecutive_failures"], 0)
 
 
 if __name__ == "__main__":

@@ -8,9 +8,6 @@ configuration:
   update_interval_hours:
     name: Subscription update, hours
     description: Subscription refresh interval; 0 disables scheduled updates.
-  listen_lan:
-    name: Listen on LAN
-    description: Expose SOCKS5 on all interfaces instead of localhost only.
   socks_tcp_a:
     name: Slot A SOCKS port
     description: SOCKS5 TCP port for xray-a; UDP uses the same port number.
@@ -23,36 +20,21 @@ configuration:
   socks_udp_b:
     name: Slot B UDP
     description: Enable SOCKS5 UDP relay for xray-b.
-  override_inbounds:
-    name: Override inbounds
-    description: Create the managed SOCKS5 inbound instead of subscription inbounds.
+  dual_slot_enabled:
+    name: Dual-slot mode
+    description: Enabled uses blue-green A/B switching; disabled uses xray-a only and briefly drops all connections when changing outbound.
   proxy_username:
     name: SOCKS5 username
     description: Optional username; must be set together with the password.
   proxy_password:
     name: SOCKS5 password
     description: Optional password; must be set together with the username.
-  disable_observatory:
-    name: Disable observatory
-    description: Remove observatory from downloaded configurations.
   log_level:
     name: Xray log level
     description: Logging verbosity of Xray processes.
   user_agent:
     name: Subscription User-Agent
     description: User-Agent header used to download the subscription.
-  validate_routing_tags:
-    name: Validate routing tags
-    description: Check routing references against available outbounds.
-  auto_fix_routing_tags:
-    name: Repair routing tags
-    description: Automatically repair supported missing routing references.
-  restart_on_runtime_error:
-    name: Restart on runtime error
-    description: Exit for restart when the active Xray process cannot be recovered.
-  auto_add_proxy_direct:
-    name: Add proxy-direct
-    description: Create the helper direct outbound when required.
   auto_checker_enabled:
     name: Automatic checks
     description: Run a background full check at startup and later on schedule.
@@ -61,7 +43,7 @@ configuration:
     description: Switch to a sufficiently faster outbound after a full check.
   auto_switch_excluded:
     name: Exclude from selection
-    description: Comma-separated ISO country codes and text fragments excluded only from automatic selection; manual selection is unaffected.
+    description: Comma-separated ISO country codes and text fragments always excluded from automatic selection. Disable “Hide excluded” in the UI to select one manually.
   auto_switch_min_ping_delta_ms:
     name: Minimum difference, ms
     description: Minimum latency improvement required for automatic switching.
@@ -89,8 +71,8 @@ configuration:
   primary_test_url:
     name: Primary test URL
     description: First control endpoint; used in parallel with the secondary URL for every check.
-  secondary_check_url:
-    name: Secondary check URL
+  secondary_test_url:
+    name: Secondary test URL
     description: Second independent control endpoint; the fastest successful result is stored.
   selector_control_enabled:
     name: Selector control
@@ -106,7 +88,7 @@ configuration:
     description: Selector tag containing xray-a and xray-b.
   selector_status_interval_seconds:
     name: Selector polling, seconds
-    description: Refresh interval for selector and connection status.
+    description: Normal selector polling interval; automatically reduced to 1 second while draining or after Clash API becomes unavailable.
   drain_quiet_seconds:
     name: Drain quiet period, seconds
     description: Required zero-activity period before stopping the old slot.
@@ -118,7 +100,7 @@ configuration:
     description: 0 waits naturally; another value force-stops the slot after the timeout.
   router_control_enabled:
     name: OpenWrt control
-    description: Show play/pause and control a firewall rule over SSH.
+    description: Control the UCI firewall rule and draining-slot guard over SSH; required for safe dual-slot switching.
   router_host:
     name: OpenWrt host
     description: IP address or hostname of the SSH firewall host.
@@ -143,9 +125,12 @@ configuration:
   router_firewall_rule:
     name: Firewall rule name
     description: UCI rule name controlled by the play/pause button.
+  router_xray_host:
+    name: Xray Proxy Manager host
+    description: LAN IP of the Home Assistant host reached by OpenWrt on the xray-a and xray-b ports; used by the draining-slot guard.
   router_status_interval_seconds:
     name: OpenWrt polling, seconds
-    description: Interval for checking the current rule state.
+    description: Interval for checking the UCI rule and nftables guard; protection is restored immediately after a managed reload.
   ui_sort:
     name: List sorting
     description: Initial outbound order in the web interface.

@@ -4,17 +4,17 @@ ARG BUILD_ARCH
 ARG TARGETARCH
 ARG TARGETVARIANT
 ARG XRAY_VERSION=v26.7.11
-ARG BUILD_VERSION="0.6.8"
-ARG RELEASE_TAG="v0.6.8"
+ARG BUILD_VERSION="0.7.0"
+ARG RELEASE_TAG="v0.7.0"
 
 LABEL io.hass.version="${BUILD_VERSION}" \
       io.hass.type="app" \
       io.hass.arch="${BUILD_ARCH}" \
       io.hass.name="Xray Proxy Manager" \
-      io.hass.description="Управление Xray через два независимых SOCKS5-слота" \
+      io.hass.description="Управление Xray через один или два SOCKS5-слота" \
       io.hass.url="https://github.com/serjeleone/xray-proxy-manager" \
       org.opencontainers.image.title="Xray Proxy Manager" \
-      org.opencontainers.image.description="Home Assistant app for Xray outbound management with two independent SOCKS5 slots" \
+      org.opencontainers.image.description="Home Assistant app for Xray outbound management with one or two managed SOCKS5 slots" \
       org.opencontainers.image.source="https://github.com/serjeleone/xray-proxy-manager" \
       org.opencontainers.image.url="https://github.com/serjeleone/xray-proxy-manager" \
       org.opencontainers.image.documentation="https://github.com/serjeleone/xray-proxy-manager/blob/main/xray-proxy-manager/DOCS.md" \

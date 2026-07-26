@@ -8,9 +8,6 @@ configuration:
   update_interval_hours:
     name: Обновление подписки, ч
     description: Интервал загрузки подписки; 0 отключает расписание.
-  listen_lan:
-    name: Доступ из локальной сети
-    description: Слушать SOCKS5 на всех интерфейсах, а не только localhost.
   socks_tcp_a:
     name: SOCKS-порт слота A
     description: TCP-порт SOCKS5 для xray-a; UDP использует тот же номер.
@@ -23,36 +20,21 @@ configuration:
   socks_udp_b:
     name: UDP в слоте B
     description: Разрешить SOCKS5 UDP relay для xray-b.
-  override_inbounds:
-    name: Заменять inbounds
-    description: Создавать управляемый SOCKS5-inbound вместо inbounds из подписки.
+  dual_slot_enabled:
+    name: Двухслотовая схема
+    description: Включено — плавное blue-green переключение через A/B; выключено — используется только xray-a с кратким разрывом всех соединений при смене outbound.
   proxy_username:
     name: Пользователь SOCKS5
     description: Необязательное имя пользователя; задаётся вместе с паролем.
   proxy_password:
     name: Пароль SOCKS5
     description: Необязательный пароль; задаётся вместе с именем пользователя.
-  disable_observatory:
-    name: Отключить observatory
-    description: Удалять observatory из загруженной конфигурации.
   log_level:
     name: Уровень логов Xray
     description: Подробность журнала процесса Xray.
   user_agent:
     name: User-Agent подписки
     description: Заголовок User-Agent при загрузке подписки.
-  validate_routing_tags:
-    name: Проверять routing-теги
-    description: Проверять ссылки routing на существующие outbound.
-  auto_fix_routing_tags:
-    name: Исправлять routing-теги
-    description: Автоматически исправлять допустимые отсутствующие ссылки.
-  restart_on_runtime_error:
-    name: Перезапуск при ошибке
-    description: Завершать приложение для перезапуска, если восстановление Xray невозможно.
-  auto_add_proxy_direct:
-    name: Добавлять proxy-direct
-    description: Создавать служебный direct-outbound при необходимости.
   auto_checker_enabled:
     name: Автоматические проверки
     description: Запускать фоновую проверку при старте и затем по расписанию.
@@ -61,7 +43,7 @@ configuration:
     description: После полной проверки переключаться на достаточно более быстрый вариант.
   auto_switch_excluded:
     name: Исключить из выбора
-    description: ISO-коды стран и фрагменты строк через запятую; исключаются только из автоматического выбора, на ручной выбор не влияют.
+    description: ISO-коды стран и фрагменты строк через запятую; всегда исключаются из автоматического выбора. Для ручного выбора скрытого outbound снимите галочку «Скрыть исключенные» в UI.
   auto_switch_min_ping_delta_ms:
     name: Минимальная разница, мс
     description: Минимальное улучшение пинга для автоматического переключения.
@@ -89,7 +71,7 @@ configuration:
   primary_test_url:
     name: Основной URL проверки
     description: Первый контрольный адрес; используется параллельно со вторым URL во всех проверках.
-  secondary_check_url:
+  secondary_test_url:
     name: Дополнительный URL проверки
     description: Второй независимый контрольный адрес; сохраняется минимальная успешная задержка из двух запросов.
   selector_control_enabled:
@@ -106,7 +88,7 @@ configuration:
     description: Тег selector, содержащего элементы xray-a и xray-b.
   selector_status_interval_seconds:
     name: Опрос selector, с
-    description: Интервал обновления состояния selector и соединений.
+    description: Обычный интервал опроса selector; во время дренирования и после недоступности Clash API автоматически сокращается до 1 секунды.
   drain_quiet_seconds:
     name: Пауза перед остановкой, с
     description: Сколько ждать нулевую активность перед остановкой старого слота.
@@ -118,7 +100,7 @@ configuration:
     description: 0 — ждать естественно; другое значение принудительно остановит слот по таймауту.
   router_control_enabled:
     name: Управление OpenWrt
-    description: Показать play/pause и управлять правилом firewall через SSH.
+    description: Управлять UCI-правилом firewall и защитой дренируемого слота через SSH; требуется для безопасного двухслотового переключения.
   router_host:
     name: Адрес OpenWrt
     description: IP-адрес или имя SSH-узла с правилом firewall.
@@ -143,9 +125,12 @@ configuration:
   router_firewall_rule:
     name: Имя правила firewall
     description: Имя UCI-правила, которое переключает кнопка play/pause.
+  router_xray_host:
+    name: Адрес Xray Proxy Manager
+    description: LAN-IP узла Home Assistant, к которому OpenWrt подключается по портам xray-a и xray-b; используется защитой дренируемого слота.
   router_status_interval_seconds:
     name: Опрос OpenWrt, с
-    description: Интервал проверки текущего состояния правила.
+    description: Интервал проверки UCI-правила и nftables guard; после управляемого reload защита восстанавливается немедленно.
   ui_sort:
     name: Сортировка списка
     description: Начальный порядок outbound в веб-интерфейсе.
