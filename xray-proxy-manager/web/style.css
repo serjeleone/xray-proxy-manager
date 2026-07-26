@@ -224,7 +224,7 @@ button:hover:not(:disabled)::after { opacity: 1; }
   margin-top: auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
 }
 .subscription-actions .button { flex: 0 0 auto; align-self: center; }
@@ -544,7 +544,7 @@ body.modal-open { overflow: hidden; }
   .hero-primary-row h2 { max-height: 2.2em; font-size: 1.48rem; line-height: 1.08; }
   .hero-details { gap: 3px; }
   .hero-actions { gap: 8px; margin-top: auto; padding-top: 15px; }
-  .hero-actions .button { min-height: 40px; padding: 0 13px; font-size: .79rem; }
+  .hero-actions .button { min-height: 40px; padding: 0 13px 1px; font-size: .82rem; }
   .settings-card { padding: 16px; }
   .subscription-fields { grid-template-columns: minmax(0, 1fr) 108px; gap: 9px; }
   .subscription-fields label { min-width: 0; }
@@ -598,17 +598,19 @@ body.modal-open { overflow: hidden; }
   .logs-scroll-controls { right: calc(16px - var(--logs-mobile-right-shift)); bottom: 54px; }
   .logs-scroll-button { width: 34px; height: 34px; }
   .logs-footer { padding: 10px calc(16px - var(--logs-mobile-right-shift)) 10px 15px; flex-direction: row; }
-  .button, .mini-button { padding-top: 0; padding-bottom: 0; }
-  .button.compact { padding-top: 0; padding-bottom: 0; }
+  .button, .mini-button { padding-top: 0; padding-bottom: 1px; }
+  .button.compact { padding-top: 0; padding-bottom: 1px; font-size: .81rem; }
+  .mini-button { font-size: .78rem; }
   .hero-actions {
     flex-wrap: nowrap;
-    gap: 7px;
+    gap: 6px;
   }
   .hero-actions .button {
     min-width: 0;
     min-height: 40px;
-    padding: 0 9px;
-    font-size: .76rem;
+    padding: 0 7px;
+    font-size: 1rem;
+    line-height: 1;
     white-space: nowrap;
   }
   .hero-actions .button:not(.hero-stop) { flex: 1 1 0; }
@@ -771,4 +773,39 @@ body.modal-open { overflow: hidden; }
   .slot-badge { width: 1.35em; height: 1.35em; flex-basis: 1.35em; }
   .outbound-actions { width: 100%; }
   .outbound-actions .ping { flex: 1 1 auto; }
+}
+
+/* Mobile vertical alignment for all text controls and action buttons. */
+@media (max-width: 760px) {
+  input[type="number"],
+  input[type="text"],
+  input[type="url"],
+  input[type="search"],
+  input[type="password"],
+  input[type="email"],
+  input[type="tel"],
+  select {
+    height: 42px;
+    min-height: 42px;
+    padding-top: 0;
+    padding-bottom: 0;
+    line-height: 40px;
+  }
+
+  .button,
+  .mini-button {
+    padding-top: 0;
+    padding-bottom: 0;
+    line-height: 1;
+  }
+
+  .subscription-actions {
+    gap: 10px;
+  }
+}
+
+@media (max-width: 470px) {
+  .subscription-actions {
+    gap: 9px;
+  }
 }

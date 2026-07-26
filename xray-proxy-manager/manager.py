@@ -9,7 +9,6 @@ import http.server
 import json
 import os
 import re
-import select
 import shlex
 import shutil
 import signal
@@ -50,12 +49,12 @@ CURL_BIN = '/usr/bin/curl'
 SSH_BIN = '/usr/bin/ssh'
 SSHPASS_BIN = '/usr/bin/sshpass'
 SSH_KEYGEN_BIN = '/usr/bin/ssh-keygen'
-DEFAULT_UI_PORT = 8099
+DEFAULT_UI_PORT = 8090
 WATCHDOG_PORT = 18099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.7.2'
+ADDON_VERSION = '0.7.3'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_TEST_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -2221,6 +2220,20 @@ class XrayManager:
             right.port,
             right.outbound_tag,
         )
+
+    @staticmethod
+    def same_candidate_identity(left: Candidate | None, right: Candidate | None) -> bool:
+        """Compare concrete subscription entries without merging duplicates.
+
+        Fingerprints intentionally survive subscription refreshes, so two
+        duplicate entries can share one fingerprint while having distinct IDs.
+        Runtime slot and active-card assignment must prefer the concrete ID.
+        """
+        if left is None or right is None:
+            return False
+        if left.id and right.id:
+            return left.id == right.id
+        return XrayManager.same_outbound(left, right)
 
     def candidate_by_tag(self, outbound_tag: str, preferred_source: int | None = None) -> Candidate | None:
         matches = [item for item in self.candidates if item.outbound_tag == outbound_tag]
@@ -4655,13 +4668,13 @@ class XrayManager:
             match: Candidate | None = None
             if tag == self.active_slot_tag and self.active_candidate_id:
                 match = self.candidate_by_id(self.active_candidate_id)
+            if match is None and slot.candidate_id:
+                match = self.candidate_by_id(slot.candidate_id)
             if match is None and slot.candidate is not None:
                 match = next(
                     (item for item in self.candidates if self.same_outbound(item, slot.candidate)),
                     None,
                 )
-            if match is None and slot.candidate_id:
-                match = self.candidate_by_id(slot.candidate_id)
             if match is None and slot.candidate_name:
                 match = next(
                     (item for item in self.candidates if item.name == slot.candidate_name),
@@ -4711,12 +4724,15 @@ class XrayManager:
             for item in self.candidates:
                 assigned_slots = [
                     tag for tag, slot in self.slots.items()
-                    if slot.running() and self.same_outbound(item, slot.candidate or self.candidate_by_id(slot.candidate_id))
+                    if slot.running() and self.same_candidate_identity(
+                        item,
+                        slot.candidate or self.candidate_by_id(slot.candidate_id),
+                    )
                 ]
                 draining_slots = [
                     tag for tag in assigned_slots if self.slots[tag].draining
                 ]
-                is_active = self.same_outbound(item, active_slot_candidate)
+                is_active = self.same_candidate_identity(item, active_slot_candidate)
                 payload = item.public(self.latencies.get(item.id), is_active)
                 payload['slot_tags'] = assigned_slots
                 payload['draining_slots'] = draining_slots
@@ -4982,6 +4998,22 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 class IngressTCPProxyHandler(socketserver.BaseRequestHandler):
+    @staticmethod
+    def forward_stream(source: socket.socket, target: socket.socket) -> None:
+        try:
+            while True:
+                data = source.recv(65536)
+                if not data:
+                    break
+                target.sendall(data)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            try:
+                target.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
     def handle(self) -> None:
         server = self.server
         target_host = getattr(server, 'target_host', '127.0.0.1')
@@ -4991,32 +5023,24 @@ class IngressTCPProxyHandler(socketserver.BaseRequestHandler):
         except OSError:
             return
 
-        with upstream:
-            client = self.request
-            client.setblocking(False)
-            upstream.setblocking(False)
-            sockets = [client, upstream]
-            while True:
-                try:
-                    readable, _, exceptional = select.select(sockets, [], sockets, 1.0)
-                except (OSError, ValueError):
-                    return
-                if exceptional:
-                    return
-                for source in readable:
-                    try:
-                        data = source.recv(65536)
-                    except BlockingIOError:
-                        continue
-                    except OSError:
-                        return
-                    if not data:
-                        return
-                    target = upstream if source is client else client
-                    try:
-                        target.sendall(data)
-                    except OSError:
-                        return
+        client = self.request
+        client.settimeout(None)
+        upstream.settimeout(None)
+        request_thread = threading.Thread(
+            target=self.forward_stream,
+            args=(client, upstream),
+            daemon=True,
+        )
+        request_thread.start()
+        try:
+            self.forward_stream(upstream, client)
+        finally:
+            try:
+                upstream.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            upstream.close()
+            request_thread.join(timeout=1)
 
 
 class ThreadingTCPProxyServer(socketserver.ThreadingMixIn, socketserver.TCPServer):

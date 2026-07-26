@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import socket
 import sys
 import threading
 import time
@@ -60,6 +61,13 @@ class ManagerLogicTests(unittest.TestCase):
         )
 
         self.assertFalse(manager.XrayManager.same_outbound(first, second))
+
+    def test_concrete_candidate_identity_does_not_merge_duplicate_entries(self) -> None:
+        first = candidate("duplicate", "198.51.100.10", fingerprint="shared")
+        second = candidate("duplicate-2", "198.51.100.10", fingerprint="shared")
+
+        self.assertTrue(manager.XrayManager.same_outbound(first, second))
+        self.assertFalse(manager.XrayManager.same_candidate_identity(first, second))
 
     def test_slots_use_independent_ports_with_udp_always_enabled(self) -> None:
         instance = manager.XrayManager.__new__(manager.XrayManager)
@@ -178,6 +186,58 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertTrue(result["immediate_switched"])
         self.assertTrue(result["switch_started"])
 
+    def test_ingress_proxy_forwards_large_responses_without_truncation(self) -> None:
+        payload = b"x" * 512_000
+        target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        target.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        target.bind(("127.0.0.1", 0))
+        target.listen(1)
+        target_host, target_port = target.getsockname()
+
+        def serve_target() -> None:
+            connection, _address = target.accept()
+            with connection:
+                request = bytearray()
+                while b"\r\n\r\n" not in request:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        return
+                    request.extend(chunk)
+                header = (
+                    b"HTTP/1.0 200 OK\r\n"
+                    b"Content-Type: application/octet-stream\r\n"
+                    + f"Content-Length: {len(payload)}\r\n".encode("ascii")
+                    + b"Connection: close\r\n\r\n"
+                )
+                connection.sendall(header + payload)
+
+        target_thread = threading.Thread(target=serve_target, daemon=True)
+        target_thread.start()
+        proxy = manager.ThreadingTCPProxyServer(
+            ("127.0.0.1", 0),
+            target_host=target_host,
+            target_port=target_port,
+        )
+        proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        proxy_thread.start()
+        try:
+            with socket.create_connection(proxy.server_address, timeout=5) as client:
+                client.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                received = bytearray()
+                while True:
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        break
+                    received.extend(chunk)
+            header, body = bytes(received).split(b"\r\n\r\n", 1)
+            self.assertIn(f"Content-Length: {len(payload)}".encode("ascii"), header)
+            self.assertEqual(body, payload)
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            target.close()
+            target_thread.join(timeout=1)
+
     def test_web_ui_accepts_only_ingress_and_loopback_clients(self) -> None:
         handler = manager.WebHandler.__new__(manager.WebHandler)
         for address in ("172.30.32.2", "127.0.0.1", "::1", "::ffff:127.0.0.1"):
@@ -246,6 +306,59 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertIs(item["draining"], True)
         self.assertIs(item["excluded"], True)
         self.assertIs(payload["ui_settings"]["hide_excluded"], True)
+
+    def test_status_marks_only_one_duplicate_entry_as_active(self) -> None:
+        first = candidate("duplicate", "198.51.100.50", fingerprint="shared")
+        second = candidate("duplicate-2", "198.51.100.50", fingerprint="shared")
+        instance = manager.XrayManager.__new__(manager.XrayManager)
+        instance.lock = threading.RLock()
+        instance.dual_slot_enabled = True
+        instance.candidates = [first, second]
+        instance.latencies = {}
+        instance.active_slot_tag = "xray-a"
+        instance.active_candidate_id = first.id
+        instance.started_at = int(time.time())
+        instance.state = {"jobs": {}, "auto_check_failures": 0, "active_candidate_id": first.id}
+        instance.next_update_at = None
+        instance.subscription_url = ""
+        instance.update_interval_hours = 1
+        instance.auto_checker_enabled = True
+        instance.auto_switch_best_enabled = True
+        instance.auto_switch_preferred_country = ""
+        instance.auto_switch_excluded = "RU"
+        instance.auto_switch_min_ping_delta_ms = 100
+        instance.auto_check_interval_seconds = 60
+        instance.auto_check_failures = 3
+        instance.auto_check_max_latency_ms = 500
+        instance.auto_best_check_interval_seconds = 600
+        instance.ui_sort = "ping-asc"
+        instance.ui_protocol_filter = "all"
+        instance.ui_max_ping_ms = 1000
+        instance.ui_hide_unavailable = False
+        instance.ui_hide_excluded = True
+        instance.selector_state = {}
+        instance.router_state = {}
+        instance.selector_tag = "xray-active"
+        instance.drain_quiet_seconds = 30
+        instance.drain_timeout_minutes = 0
+        instance.primary_test_url = "https://primary.example/"
+        instance.secondary_test_url = "https://secondary.example/"
+        instance._xray_version_cache = "Xray test"
+        instance.slots = {
+            "xray-a": manager.XraySlot(
+                "xray-a", 10808, True, Path("/tmp/a"), process=DummyProcess(),
+                candidate_id=first.id, candidate_name=first.name, candidate=first,
+            ),
+            "xray-b": manager.XraySlot("xray-b", 10809, True, Path("/tmp/b")),
+        }
+        instance.save_state = lambda: None
+
+        payload = instance.status_payload()
+
+        active_ids = [item["id"] for item in payload["candidates"] if item["active"]]
+        self.assertEqual(active_ids, [first.id])
+        duplicate = next(item for item in payload["candidates"] if item["id"] == second.id)
+        self.assertEqual(duplicate["slot_tags"], [])
 
     def test_status_rebinds_active_slot_before_first_ui_render(self) -> None:
         stale = candidate("old-active-id", "198.51.100.40", fingerprint="stable-active")

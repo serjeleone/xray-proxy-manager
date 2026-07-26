@@ -5,6 +5,7 @@ const state = {
   restartChanges: null,
   logsOpen: false,
   logsTimer: null,
+  logsFetchInFlight: false,
   logsLines: [],
   logsRenderedLines: [],
   logsTotal: 0,
@@ -16,7 +17,7 @@ const state = {
   savedAutoChecker: null,
   savedSubscription: null,
   preferredCountriesSignature: '',
-  preferredCountrySaving: false,
+  preferredCountryDraft: null,
   statusRefreshDeferred: false,
   changelogOpen: false,
   releaseNotes: [],
@@ -168,8 +169,8 @@ function latencyRank(item) {
 
 function sameCandidateIdentity(left, right) {
   if (!left || !right) return false;
-  if (left.id && right.id && left.id === right.id) return true;
-  if (left.fingerprint && right.fingerprint && left.fingerprint === right.fingerprint) return true;
+  if (left.id && right.id) return left.id === right.id;
+  if (left.fingerprint && right.fingerprint) return left.fingerprint === right.fingerprint;
   if (left.id || right.id || left.fingerprint || right.fingerprint) return false;
   return Boolean(
     left.outbound_tag && right.outbound_tag
@@ -279,7 +280,7 @@ function countryDisplayName(code) {
 function renderPreferredCountries(payload) {
   const select = $('autoSwitchPreferredCountry');
   const checker = payload.auto_checker || {};
-  const desired = checker.preferred_country || select.value || '';
+  const desired = state.preferredCountryDraft ?? checker.preferred_country ?? select.value ?? '';
   const codes = [...new Set(
     (payload.candidates || [])
       .map((item) => String(item.country_code || '').toUpperCase())
@@ -533,6 +534,7 @@ function initializeSettings(payload) {
   $('autoBestCheckInterval').value = checker.best_check_interval_seconds ?? 600;
   renderPreferredCountries(payload);
   $('autoSwitchPreferredCountry').value = checker.preferred_country || '';
+  state.preferredCountryDraft = null;
   $('autoSwitchExcluded').value = checker.excluded ?? 'RU';
   $('autoSwitchMinPingDelta').value = checker.min_ping_delta_ms ?? 100;
   $('subscriptionUrl').value = subscription.url || '';
@@ -785,6 +787,8 @@ function moveLogSearch(direction) {
 }
 
 async function fetchLogs(forceScroll = false) {
+  if (state.logsFetchInFlight) return;
+  state.logsFetchInFlight = true;
   const content = $('logsContent');
   const wasNearBottom = content.scrollHeight - content.scrollTop - content.clientHeight < 80;
   try {
@@ -803,15 +807,15 @@ async function fetchLogs(forceScroll = false) {
       });
     }
   } catch (error) {
-    $('logsMeta').textContent = 'Ошибка загрузки';
-    if (logSelectionActive()) {
+    $('logsMeta').textContent = 'Ошибка загрузки · повторная попытка';
+    if (!state.logsLines.length && !logSelectionActive()) {
+      content.textContent = `Не удалось загрузить логи: ${error.message}`;
+      setLogSearchControls(0);
+    } else if (logSelectionActive()) {
       state.logsUpdateDeferred = true;
-      return;
     }
-    state.logsLines = [];
-    state.logsRenderedLines = [];
-    content.textContent = `Не удалось загрузить логи: ${error.message}`;
-    setLogSearchControls(0);
+  } finally {
+    state.logsFetchInFlight = false;
   }
 }
 
@@ -907,7 +911,7 @@ function toggleChangelog(event) {
 }
 
 function statusRefreshPaused() {
-  return state.logsOpen || state.preferredCountrySaving || $('autoSwitchPreferredCountry').matches(':focus');
+  return state.logsOpen || $('autoSwitchPreferredCountry').matches(':focus');
 }
 
 async function fetchStatus(force = false) {
@@ -1079,39 +1083,40 @@ async function saveSettings(changes, successMessage) {
   }
 }
 
-async function changePreferredCountry() {
-  const select = $('autoSwitchPreferredCountry');
-  const country = select.value;
-  select.disabled = true;
-  state.preferredCountrySaving = true;
-  updateSaveButtons();
-  try {
-    const result = await post('api/preferred-country', { country });
-    if (state.savedAutoChecker) {
-      state.savedAutoChecker = {
-        ...state.savedAutoChecker,
-        auto_switch_preferred_country: country,
-      };
-    }
-    updateSaveButtons();
-    toast(result.message || (country ? `Установлен приоритет страны ${country}` : 'Приоритет страны отключён'));
-    await fetchStatus(true);
-  } catch (error) {
-    toast(`Ошибка выбора страны: ${error.message}`, true);
-    await fetchStatus(true);
-  } finally {
-    state.preferredCountrySaving = false;
-    select.disabled = false;
-    if (state.statusRefreshDeferred && !select.matches(':focus')) fetchStatus(true);
-  }
-}
-
 async function saveAutoChecker() {
   const changes = autoCheckerFormValues();
+  const previousCountry = state.savedAutoChecker?.auto_switch_preferred_country || '';
+  const preferredCountryChanged = changes.auto_switch_preferred_country !== previousCountry;
+  const ordinaryChanges = { ...changes };
+  delete ordinaryChanges.auto_switch_preferred_country;
   $('autoSwitchExcluded').value = changes.auto_switch_excluded;
-  if (await saveSettings(changes, 'Настройки авто-чекера сохранены')) {
+
+  try {
+    const settingsResult = await post('api/settings', { changes: ordinaryChanges });
+    if (settingsResult.restart_required?.length) {
+      showRestartModal(ordinaryChanges);
+      return;
+    }
+    if (!settingsResult.supervisor_synced && settingsResult.supervisor_error) {
+      console.warn(settingsResult.supervisor_error);
+    }
+
+    let message = 'Настройки авто-чекера сохранены';
+    if (preferredCountryChanged) {
+      const countryResult = await post('api/preferred-country', {
+        country: changes.auto_switch_preferred_country,
+      });
+      message = countryResult.message || message;
+    }
+
     state.savedAutoChecker = { ...changes };
+    state.preferredCountryDraft = null;
     updateSaveButtons();
+    toast(message);
+    await fetchStatus(true);
+  } catch (error) {
+    toast(`Ошибка сохранения: ${error.message}`, true);
+    await fetchStatus(true);
   }
 }
 
@@ -1200,9 +1205,12 @@ $('saveSubscription').addEventListener('click', saveSubscriptionSettings);
 ['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
   $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled'].includes(id) ? 'change' : 'input', updateSaveButtons);
 });
-$('autoSwitchPreferredCountry').addEventListener('change', changePreferredCountry);
+$('autoSwitchPreferredCountry').addEventListener('change', () => {
+  state.preferredCountryDraft = $('autoSwitchPreferredCountry').value;
+  updateSaveButtons();
+});
 $('autoSwitchPreferredCountry').addEventListener('blur', () => {
-  if (state.statusRefreshDeferred && !state.preferredCountrySaving) fetchStatus(true);
+  if (state.statusRefreshDeferred) fetchStatus(true);
 });
 ['subscriptionUrl', 'subscriptionInterval'].forEach((id) => $(id).addEventListener('input', updateSaveButtons));
 ['sortSelect', 'protocolFilter', 'maxPing', 'hideUnavailable', 'hideExcluded'].forEach((id) => {

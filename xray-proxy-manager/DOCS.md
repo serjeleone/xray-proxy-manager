@@ -254,4 +254,4 @@ AND post-switch protection elapsed
 
 ## Версия
 
-Текущая версия: `v0.7.2`.
+Текущая версия: `v0.7.3`.

@@ -1,5 +1,5 @@
 name: Xray Proxy Manager
-version: "0.7.2"
+version: "0.7.3"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
 description: "Управление Xray через один или два SOCKS5-слота, проверка outbound и безопасное переключение"
@@ -50,7 +50,7 @@ options:
   primary_test_url: "https://www.gstatic.com/generate_204"
   secondary_test_url: "https://cp.cloudflare.com/generate_204"
 
-  ui_port: 8099
+  ui_port: 8090
   ui_sort: "ping-asc"
   ui_protocol_filter: "all"
   ui_max_ping_ms: 1000
