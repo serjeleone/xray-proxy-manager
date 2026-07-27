@@ -24,7 +24,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs, quote, urlparse
 
 OPTIONS_PATH = Path('/data/options.json')
@@ -54,7 +54,7 @@ WATCHDOG_PORT = 18099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.7.3'
+ADDON_VERSION = '0.7.4'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_TEST_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -73,6 +73,7 @@ RUNTIME_SETTING_KEYS = {
     'auto_checker_enabled',
     'auto_switch_best_enabled',
     'auto_switch_preferred_country',
+    'auto_switch_preferred_protocol',
     'auto_switch_excluded',
     'auto_switch_min_ping_delta_ms',
     'auto_check_interval_seconds',
@@ -262,6 +263,15 @@ def normalize_preferred_country(value: Any) -> str:
         return ''
     if not re.fullmatch(r'[A-Z]{2}', text) or text not in ISO_COUNTRY_CODES:
         raise ValueError(f'Неизвестный код предпочитаемой страны: {text}')
+    return text
+
+
+def normalize_preferred_protocol(value: Any) -> str:
+    text = str(value or '').strip().upper()
+    if not text:
+        return ''
+    if len(text) > 32 or not re.fullmatch(r'[A-Z0-9][A-Z0-9+._-]*', text):
+        raise ValueError(f'Некорректный предпочитаемый протокол: {text}')
     return text
 
 
@@ -731,6 +741,7 @@ class XrayManager:
         self.auto_checker_enabled = True
         self.auto_switch_best_enabled = True
         self.auto_switch_preferred_country = ''
+        self.auto_switch_preferred_protocol = ''
         self.auto_switch_excluded = 'RU'
         self.auto_switch_min_ping_delta_ms = 100
         self.auto_check_interval_seconds = 60
@@ -766,7 +777,7 @@ class XrayManager:
         self.router_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.settings_event = threading.Event()
-        self.preferred_country_scan_generation = 0
+        self.preference_scan_generation = 0
         self.subscription: list[dict[str, Any]] = []
         self.candidates: list[Candidate] = []
         self.active_candidate_id = ''
@@ -813,6 +824,7 @@ class XrayManager:
         self.latencies = load_json(LATENCY_PATH, {})
         if not isinstance(self.latencies, dict):
             self.latencies = {}
+        self.latency_checking_ids: set[str] = set()
         self.active_candidate_id = str(self.state.get('active_candidate_id') or '')
         remembered_slot = str(self.state.get('active_slot_tag') or 'xray-a')
         self.active_slot_tag = (
@@ -870,6 +882,9 @@ class XrayManager:
         self.auto_switch_preferred_country = normalize_preferred_country(
             source.get('auto_switch_preferred_country', '')
         )
+        self.auto_switch_preferred_protocol = normalize_preferred_protocol(
+            source.get('auto_switch_preferred_protocol', '')
+        )
         self.auto_switch_excluded = normalize_auto_switch_exclusions(
             source.get('auto_switch_excluded', 'RU')
         )
@@ -920,6 +935,8 @@ class XrayManager:
                 normalized[key] = to_bool(value)
             elif key == 'auto_switch_preferred_country':
                 normalized[key] = normalize_preferred_country(value)
+            elif key == 'auto_switch_preferred_protocol':
+                normalized[key] = normalize_preferred_protocol(value)
             elif key == 'auto_switch_excluded':
                 normalized[key] = normalize_auto_switch_exclusions(value)
             elif key == 'auto_switch_min_ping_delta_ms':
@@ -975,40 +992,79 @@ class XrayManager:
             'supervisor_error': supervisor_error,
         }
 
-    def _deferred_preferred_country_scan(self, country: str, generation: int) -> None:
+    def candidate_preference_score(self, candidate: Candidate | None) -> tuple[int, int, int]:
+        if candidate is None:
+            return (0, 0, 0)
+        preferred_country = getattr(self, 'auto_switch_preferred_country', '')
+        preferred_protocol = getattr(self, 'auto_switch_preferred_protocol', '')
+        country_match = int(bool(preferred_country and candidate.country_code == preferred_country))
+        protocol_match = int(bool(
+            preferred_protocol and candidate.protocol.casefold() == preferred_protocol.casefold()
+        ))
+        # Country is the primary preference. A candidate from the preferred
+        # country always outranks a protocol-only match, while the protocol is
+        # used to choose between candidates with the same country priority.
+        weighted_score = country_match * 2 + protocol_match
+        return (weighted_score, country_match, protocol_match)
+
+    def candidate_preference_sort_key(self, candidate: Candidate) -> tuple[int, int, int]:
+        score, country_match, protocol_match = self.candidate_preference_score(candidate)
+        return (-score, -country_match, -protocol_match)
+
+    def _deferred_preference_scan(
+        self,
+        country: str,
+        protocol: str,
+        generation: int,
+        source: str,
+    ) -> None:
         while not self.stop_event.wait(0.5):
             with self.lock:
                 if (
-                    generation != self.preferred_country_scan_generation
+                    generation != self.preference_scan_generation
                     or self.auto_switch_preferred_country != country
+                    or self.auto_switch_preferred_protocol != protocol
                 ):
                     return
                 running = bool(self.state['jobs']['latency'].get('running'))
             if running:
                 continue
-            if self.request_latency_test(
-                None,
-                switch_to_best=True,
-                source='preferred-country',
-            ):
+            if self.request_latency_test(None, switch_to_best=True, source=source):
                 return
 
-    def set_preferred_country(self, value: Any) -> dict[str, Any]:
-        country = normalize_preferred_country(value)
+    def _deferred_preferred_country_scan(self, country: str, generation: int) -> None:
+        # Compatibility wrapper retained for existing callers and tests.
+        self._deferred_preference_scan(
+            country,
+            getattr(self, 'auto_switch_preferred_protocol', ''),
+            generation,
+            'preferred-country',
+        )
+
+    def set_selection_preferences(
+        self,
+        country_value: Any,
+        protocol_value: Any,
+        *,
+        source: str = 'preferred-selection',
+    ) -> dict[str, Any]:
+        country = normalize_preferred_country(country_value)
+        protocol = normalize_preferred_protocol(protocol_value)
         settings_result = self.update_runtime_settings({
             'auto_switch_preferred_country': country,
+            'auto_switch_preferred_protocol': protocol,
         })
         with self.lock:
-            self.preferred_country_scan_generation += 1
-            generation = self.preferred_country_scan_generation
-            matching = [
-                candidate
-                for candidate in self.candidates
-                if country
-                and candidate.country_code == country
-                and not self.candidate_is_excluded(candidate)
+            self.preference_scan_generation += 1
+            generation = self.preference_scan_generation
+            eligible = [
+                candidate for candidate in self.candidates
+                if not self.candidate_is_excluded(candidate)
             ]
-            matching_candidates = len(matching)
+            matching = [
+                candidate for candidate in eligible
+                if self.candidate_preference_score(candidate)[0] > 0
+            ]
             cached_healthy: list[tuple[int, str, Candidate]] = []
             cached_latencies = getattr(self, 'latencies', {})
             max_latency_ms = int(getattr(self, 'auto_check_max_latency_ms', 0) or 0)
@@ -1020,7 +1076,9 @@ class XrayManager:
                 if max_latency_ms > 0 and latency_ms > max_latency_ms:
                     continue
                 cached_healthy.append((latency_ms, candidate.name.casefold(), candidate))
-            cached_healthy.sort(key=lambda item: (item[0], item[1]))
+            cached_healthy.sort(key=lambda item: (
+                *self.candidate_preference_sort_key(item[2]), item[0], item[1]
+            ))
             immediate_candidate = cached_healthy[0][2] if cached_healthy else None
             current = self.candidate_by_id(getattr(self, 'active_candidate_id', ''))
             if hasattr(self, 'slots') and hasattr(self, 'active_slot_tag'):
@@ -1028,46 +1086,43 @@ class XrayManager:
                 if active_slot is not None and active_slot.candidate is not None:
                     current = active_slot.candidate
 
-        if not country:
+        if not country and not protocol:
             return {
                 **settings_result,
                 'country': '',
+                'protocol': '',
                 'switch_started': False,
                 'matching_candidates': 0,
-                'message': 'Приоритет страны отключён',
+                'message': 'Приоритет страны и протокола отключён',
             }
 
         immediate_switched = False
         immediate_error = ''
         should_switch_immediately = bool(
             immediate_candidate is not None
-            and (
-                current is None
-                or current.country_code != country
-            )
             and not self.same_outbound(current, immediate_candidate)
         )
         if should_switch_immediately and immediate_candidate is not None:
             try:
+                preference_label = ', '.join(filter(None, (
+                    f'country {country}' if country else '',
+                    f'protocol {protocol}' if protocol else '',
+                )))
                 self.restart_xray_for(
                     immediate_candidate,
-                    f'preferred country {country} selected from UI',
+                    f'preferred {preference_label} selected from UI',
                     preempt_draining=True,
                 )
                 immediate_switched = True
             except Exception as exc:
                 immediate_error = str(exc)
                 log(
-                    f'immediate preferred-country switch to {immediate_candidate.name} '
+                    f'immediate preferred-selection switch to {immediate_candidate.name} '
                     f'failed; continuing with full scan: {exc}',
                     error=True,
                 )
 
-        switch_started = self.request_latency_test(
-            None,
-            switch_to_best=True,
-            source='preferred-country',
-        )
+        switch_started = self.request_latency_test(None, switch_to_best=True, source=source)
         queued = False
         active_full_switch_scan = False
         if not switch_started:
@@ -1081,37 +1136,58 @@ class XrayManager:
             if not active_full_switch_scan:
                 queued = True
                 threading.Thread(
-                    target=self._deferred_preferred_country_scan,
-                    args=(country, generation),
+                    target=self._deferred_preference_scan,
+                    args=(country, protocol, generation, source),
                     daemon=True,
-                    name='preferred-country-scan',
+                    name='preferred-selection-scan',
                 ).start()
 
+        labels = []
+        if country:
+            labels.append(f'страны {country}')
+        if protocol:
+            labels.append(f'протокола {protocol}')
+        preference_text = ' и '.join(labels)
         if immediate_switched and immediate_candidate is not None:
             message = (
                 f'Активирован {immediate_candidate.name}; запущена полная проверка '
-                f'с приоритетом страны {country}'
+                f'с приоритетом {preference_text}'
             )
         elif switch_started:
-            message = f'Запущена проверка outbound с приоритетом страны {country}'
+            message = f'Запущена проверка outbound с приоритетом {preference_text}'
         elif active_full_switch_scan:
-            message = f'Текущая полная проверка продолжена с приоритетом страны {country}'
+            message = f'Текущая полная проверка продолжена с приоритетом {preference_text}'
         else:
-            message = f'Проверка с приоритетом страны {country} поставлена в очередь'
+            message = f'Проверка с приоритетом {preference_text} поставлена в очередь'
         if immediate_error:
             message += f'; немедленное переключение не выполнено: {immediate_error}'
-        if matching_candidates == 0:
-            message += '; подходящие серверы этой страны не найдены, будет использован общий список'
+        if not matching:
+            message += '; подходящие outbound не найдены, будет использован общий список'
 
         return {
             **settings_result,
             'country': country,
+            'protocol': protocol,
             'switch_started': switch_started or active_full_switch_scan or immediate_switched,
             'immediate_switched': immediate_switched,
             'queued': queued,
-            'matching_candidates': matching_candidates,
+            'matching_candidates': len(matching),
             'message': message,
         }
+
+    def set_preferred_country(self, value: Any) -> dict[str, Any]:
+        return self.set_selection_preferences(
+            value,
+            getattr(self, 'auto_switch_preferred_protocol', ''),
+            source='preferred-country',
+        )
+
+    def set_preferred_protocol(self, value: Any) -> dict[str, Any]:
+        return self.set_selection_preferences(
+            getattr(self, 'auto_switch_preferred_country', ''),
+            value,
+            source='preferred-protocol',
+        )
 
     def set_slot_mode(self, dual_slot_enabled: bool) -> dict[str, Any]:
         desired_mode = bool(dual_slot_enabled)
@@ -2200,6 +2276,27 @@ class XrayManager:
         return next((item for item in self.candidates if item.id == candidate_id), None)
 
     @staticmethod
+    def slot_candidate_id(slot_tag: str) -> str:
+        return f'slot:{slot_tag}'
+
+    def running_slot_by_candidate_id(self, candidate_id: str) -> XraySlot | None:
+        if candidate_id.startswith('slot:'):
+            slot = self.slots.get(candidate_id.removeprefix('slot:'))
+            return slot if slot is not None and slot.running() else None
+        return next(
+            (
+                slot for slot in self.slots.values()
+                if slot.running()
+                and candidate_id
+                and candidate_id in {
+                    slot.candidate_id,
+                    slot.candidate.id if slot.candidate is not None else '',
+                }
+            ),
+            None,
+        )
+
+    @staticmethod
     def same_outbound(left: Candidate | None, right: Candidate | None) -> bool:
         if left is None or right is None:
             return False
@@ -2307,21 +2404,19 @@ class XrayManager:
             selected_latency - best_latency
             if isinstance(selected_latency, int) else None
         )
-        preferred_country = getattr(self, 'auto_switch_preferred_country', '')
-        preferred_country_switch = bool(
-            preferred_country
-            and best.country_code == preferred_country
-            and selected.country_code != preferred_country
+        preferred_switch = (
+            self.candidate_preference_score(best)
+            > self.candidate_preference_score(selected)
         )
-        if preferred_country_switch or selected_latency is None or (
+        if preferred_switch or selected_latency is None or (
             isinstance(improvement, int)
             and improvement >= self.auto_switch_min_ping_delta_ms
         ):
             previous_latency = f'{selected_latency} ms' if selected_latency is not None else 'unknown'
-            if preferred_country_switch:
+            if preferred_switch:
                 log(
-                    f'startup selected preferred-country outbound {best.name} '
-                    f'[{preferred_country}] ({best_latency} ms) instead of '
+                    f'startup selected preferred outbound {best.name} '
+                    f'({best_latency} ms) instead of '
                     f'{selected.name} ({previous_latency})'
                 )
             else:
@@ -4090,6 +4185,26 @@ class XrayManager:
             'error': error_text[-500:],
         }
 
+    def test_running_slot_for_full_scan(self, slot_tag: str) -> dict[str, Any]:
+        """Measure a running slot even when its outbound left the subscription."""
+        success, latency_ms, _checks, error_text = self.probe_slot_health(
+            slot_tag,
+            enforce_latency_limit=False,
+        )
+        if success and latency_ms is not None:
+            return {
+                'status': 'ok',
+                'latency_ms': int(round(latency_ms)),
+                'checked_at': now_ts(),
+                'error': '',
+            }
+        return {
+            'status': 'error',
+            'latency_ms': None,
+            'checked_at': now_ts(),
+            'error': error_text[-500:],
+        }
+
     def latency_job(
         self,
         candidate_ids: list[str] | None = None,
@@ -4101,12 +4216,36 @@ class XrayManager:
                 item for item in self.candidates
                 if candidate_ids is None or item.id in candidate_ids
             ]
+            runtime_slot_targets: list[tuple[str, str, str]] = []
+            requested_ids = set(candidate_ids or [])
+            for slot_tag, slot in getattr(self, 'slots', {}).items():
+                if not slot.running():
+                    continue
+                represented = any(
+                    self.same_outbound(candidate, slot.candidate)
+                    for candidate in candidates
+                )
+                target_id = self.slot_candidate_id(slot_tag)
+                requested = candidate_ids is None or target_id in requested_ids
+                if represented or not requested:
+                    continue
+                target_name = slot.candidate_name or (
+                    slot.candidate.name if slot.candidate is not None else slot_tag
+                )
+                runtime_slot_targets.append((slot_tag, target_id, target_name))
             job = self.state['jobs']['latency']
-            workers = self.effective_latency_test_parallelism(len(candidates))
+            total_targets = len(candidates) + len(runtime_slot_targets)
+            workers = self.effective_latency_test_parallelism(total_targets)
+            checking_target_ids = {
+                candidate.id for candidate in candidates
+            } | {target_id for _tag, target_id, _name in runtime_slot_targets}
+            if not hasattr(self, 'latency_checking_ids'):
+                self.latency_checking_ids = set()
+            self.latency_checking_ids.update(checking_target_ids)
             job.update({
                 'running': True,
                 'progress': 0,
-                'total': len(candidates),
+                'total': total_targets,
                 'message': f'Проверка доступности · параллельно: {workers}',
             })
             self.save_state()
@@ -4144,6 +4283,7 @@ class XrayManager:
                     completed += 1
                     with self.lock:
                         self.latencies[candidate.id] = result
+                        self.latency_checking_ids.discard(candidate.id)
                         self.save_latencies()
                         job = self.state['jobs']['latency']
                         job.update({
@@ -4155,7 +4295,35 @@ class XrayManager:
                         })
                         self.save_state()
 
-            if candidate_ids is None and fresh_results and not self.stop_event.is_set():
+            for slot_tag, target_id, target_name in runtime_slot_targets:
+                if self.stop_event.is_set():
+                    break
+                try:
+                    result = self.test_running_slot_for_full_scan(slot_tag)
+                except Exception as exc:
+                    result = {
+                        'status': 'error',
+                        'latency_ms': None,
+                        'checked_at': now_ts(),
+                        'error': str(exc)[-500:],
+                    }
+                fresh_results[target_id] = result
+                completed += 1
+                with self.lock:
+                    self.latencies[target_id] = result
+                    self.latency_checking_ids.discard(target_id)
+                    self.save_latencies()
+                    job = self.state['jobs']['latency']
+                    job.update({
+                        'progress': completed,
+                        'message': f'{target_name}: ' + (
+                            f'{result["latency_ms"]} мс'
+                            if result['status'] == 'ok' else 'недоступен'
+                        ),
+                    })
+                    self.save_state()
+
+            if fresh_results and not self.stop_event.is_set():
                 self.handle_draining_full_scan_results(fresh_results)
 
             if switch_to_best and fresh_results and not self.stop_event.is_set():
@@ -4170,17 +4338,14 @@ class XrayManager:
                     if self.candidate_is_excluded(candidate):
                         continue
                     healthy.append((latency_ms, candidate.name.casefold(), candidate))
-                healthy.sort(key=lambda item: (item[0], item[1]))
+                healthy.sort(key=lambda item: (
+                    *self.candidate_preference_sort_key(item[2]),
+                    item[0],
+                    item[1],
+                ))
 
                 if healthy:
-                    preferred_country = getattr(self, 'auto_switch_preferred_country', '')
-                    preferred_healthy = [
-                        item for item in healthy
-                        if preferred_country
-                        and item[2].country_code == preferred_country
-                    ]
-                    selection_pool = preferred_healthy or healthy
-                    best_latency, _best_name, best_candidate = selection_pool[0]
+                    best_latency, _best_name, best_candidate = healthy[0]
                     with self.lock:
                         effective, selected, _mismatch = self.effective_active_candidate()
                         current = selected or effective
@@ -4195,17 +4360,17 @@ class XrayManager:
                         current_latency - best_latency
                         if isinstance(current_latency, int) else None
                     )
-                    preferred_country_switch = bool(
-                        preferred_healthy
-                        and current is not None
-                        and current.country_code != preferred_country
+                    preferred_switch = bool(
+                        current is not None
+                        and self.candidate_preference_score(best_candidate)
+                        > self.candidate_preference_score(current)
                     )
                     should_switch = (
                         current is None
                         or (
                             not self.same_outbound(current, best_candidate)
                             and (
-                                preferred_country_switch
+                                preferred_switch
                                 or
                                 not isinstance(current_latency, int)
                                 or ping_difference >= self.auto_switch_min_ping_delta_ms
@@ -4221,7 +4386,8 @@ class XrayManager:
                         log(
                             f'{source} latency check switched to {best_candidate.name} '
                             f'({best_latency} ms, difference {ping_difference} ms, '
-                            f'preferred_country={preferred_country or "none"})'
+                            f'preferred_country={getattr(self, "auto_switch_preferred_country", "") or "none"}, '
+                            f'preferred_protocol={getattr(self, "auto_switch_preferred_protocol", "") or "none"})'
                         )
                     elif current is not None and self.same_outbound(current, best_candidate):
                         final_message = f'Проверка завершена · текущий outbound оптимален ({current_latency} мс)'
@@ -4247,6 +4413,7 @@ class XrayManager:
             log(f'latency job error: {exc}', error=True)
         finally:
             with self.lock:
+                self.latency_checking_ids.difference_update(checking_target_ids)
                 self.state['jobs']['latency'].update({'running': False, 'message': final_message})
                 if candidate_ids is None and source in {'manual', 'auto-best', 'startup'}:
                     self.state['auto_best_check_last_at'] = now_ts()
@@ -4257,13 +4424,16 @@ class XrayManager:
         self,
         fresh_results: dict[str, dict[str, Any]],
     ) -> None:
-        """Stop a stale one-connection drain after repeated bad full scans.
+        """Stop a draining slot after repeated unavailable checks.
 
-        The same auto_check_failures setting is intentionally used for active-slot
-        failover and for drain tracking. Only complete list scans count;
-        single-outbound tests do not alter the counter.
+        The same ``auto_check_failures`` threshold is used by the active-slot
+        checker and by draining slots. Every completed latency test counts,
+        including a test of one outbound. A successful result resets the
+        counter. Once the threshold is reached, the draining process is stopped
+        regardless of how many old connections it still reports, because the
+        slot itself is no longer reachable.
         """
-        to_stop: list[tuple[str, int, str]] = []
+        to_stop: list[tuple[str, int, int, str]] = []
         with self.lock:
             for slot_tag in SLOT_TAGS:
                 slot = self.slots[slot_tag]
@@ -4280,39 +4450,24 @@ class XrayManager:
                     ),
                     None,
                 )
-                if current_candidate is None:
-                    slot.drain_degraded_checks = 0
-                    slot.drain_last_latency_ms = None
-                    slot.drain_last_checked_at = None
+                result_id = (
+                    current_candidate.id if current_candidate is not None
+                    else self.slot_candidate_id(slot_tag)
+                )
+                if not result_id:
                     continue
 
-                result = fresh_results.get(current_candidate.id)
+                result = fresh_results.get(result_id)
                 if not isinstance(result, dict):
                     continue
 
                 checked_at = int(result.get('checked_at') or now_ts())
                 latency_value = result.get('latency_ms')
                 latency_ms = latency_value if isinstance(latency_value, int) else None
-                degraded = result.get('status') != 'ok'
-                if (
-                    not degraded
-                    and latency_ms is not None
-                    and self.auto_check_max_latency_ms > 0
-                    and latency_ms > self.auto_check_max_latency_ms
-                ):
-                    degraded = True
-
-                # Refresh the count after the slot probe has closed so its own
-                # short-lived SOCKS connection cannot mask the last real flow.
-                current_connections = (
-                    self.local_tcp_connection_count(slot.socks_tcp)
-                    + slot.drain_udp_connections
-                )
-                slot.drain_connections = current_connections
-                slot.drain_tcp_connections = max(0, current_connections - slot.drain_udp_connections)
+                unavailable = result.get('status') != 'ok'
                 slot.drain_last_latency_ms = latency_ms
                 slot.drain_last_checked_at = checked_at
-                if degraded and current_connections == 1:
+                if unavailable:
                     slot.drain_degraded_checks += 1
                 else:
                     slot.drain_degraded_checks = 0
@@ -4320,34 +4475,34 @@ class XrayManager:
                 if slot.drain_degraded_checks < self.auto_check_failures:
                     continue
 
-                if result.get('status') == 'ok' and latency_ms is not None:
-                    reason = (
-                        f'{latency_ms}ms exceeds {self.auto_check_max_latency_ms}ms'
-                    )
-                else:
-                    reason = str(result.get('error') or 'outbound is unavailable')
-                to_stop.append((slot_tag, slot.drain_degraded_checks, reason))
+                reason = str(result.get('error') or 'outbound is unavailable')
+                to_stop.append((
+                    slot_tag,
+                    slot.drain_degraded_checks,
+                    slot.drain_connections,
+                    reason,
+                ))
 
-        for slot_tag, failures, reason in to_stop:
+        for slot_tag, failures, connections, reason in to_stop:
             with self.lock:
                 slot = self.slots[slot_tag]
                 can_stop = (
                     slot.running()
                     and slot.draining
-                    and slot.drain_connections == 1
                     and slot.drain_degraded_checks >= self.auto_check_failures
                 )
             if not can_stop:
                 continue
             log(
-                f'{slot_tag} remained degraded for {failures} consecutive full checks '
-                f'with one tracked connection ({reason}); force-stopping drained slot',
+                f'{slot_tag} remained unavailable for {failures} consecutive checks '
+                f'with {connections} tracked connection(s) ({reason}); '
+                'force-stopping drained slot',
                 error=True,
             )
             try:
                 self.force_stop_draining_slot(slot_tag)
             except Exception as exc:
-                log(f'could not stop degraded drained slot {slot_tag}: {exc}', error=True)
+                log(f'could not stop unavailable drained slot {slot_tag}: {exc}', error=True)
 
     def request_latency_test(
         self,
@@ -4358,10 +4513,30 @@ class XrayManager:
         with self.lock:
             if self.state['jobs']['latency'].get('running'):
                 return False
-            total = len([
+            targets = [
                 item for item in self.candidates
                 if candidate_ids is None or item.id in candidate_ids
-            ])
+            ]
+            checking_ids = {item.id for item in targets}
+            runtime_target_count = 0
+            requested_ids = set(candidate_ids or [])
+            for slot_tag, slot in self.slots.items():
+                if not slot.running():
+                    continue
+                represented = any(
+                    self.same_outbound(candidate, slot.candidate)
+                    for candidate in targets
+                )
+                target_id = self.slot_candidate_id(slot_tag)
+                requested = candidate_ids is None or target_id in requested_ids
+                if represented or not requested:
+                    continue
+                checking_ids.add(target_id)
+                runtime_target_count += 1
+            total = len(targets) + runtime_target_count
+            if not hasattr(self, 'latency_checking_ids'):
+                self.latency_checking_ids = set()
+            self.latency_checking_ids.update(checking_ids)
             self.state['jobs']['latency'].update({
                 'running': True,
                 'progress': 0,
@@ -4437,16 +4612,11 @@ class XrayManager:
                 if self.auto_check_max_latency_ms > 0 and latency_ms > self.auto_check_max_latency_ms:
                     continue
                 healthy.append((latency_ms, candidate))
-        healthy.sort(key=lambda item: (item[0], item[1].name.casefold()))
-        preferred_country = getattr(self, 'auto_switch_preferred_country', '')
-        if preferred_country:
-            preferred = [
-                item for item in healthy if item[1].country_code == preferred_country
-            ]
-            if preferred:
-                healthy = preferred + [
-                    item for item in healthy if item[1].country_code != preferred_country
-                ]
+        healthy.sort(key=lambda item: (
+            *self.candidate_preference_sort_key(item[1]),
+            item[0],
+            item[1].name.casefold(),
+        ))
         return [item[1] for item in healthy]
 
     def choose_failover_candidate(self) -> Candidate | None:
@@ -4491,6 +4661,37 @@ class XrayManager:
         elapsed = max(0, now_value - last_check)
         return float(max(0, interval - elapsed))
 
+    def check_draining_slots_health(self) -> None:
+        """Probe every draining slot independently of subscription contents."""
+        with self.lock:
+            if self.state['jobs']['latency'].get('running'):
+                return
+            targets = []
+            for slot_tag in SLOT_TAGS:
+                slot = self.slots[slot_tag]
+                target_id = slot.candidate_id or (
+                    slot.candidate.id if slot.candidate is not None else ''
+                )
+                if slot.running() and slot.draining and target_id:
+                    targets.append((slot_tag, target_id))
+                    self.latency_checking_ids.add(target_id)
+
+        for slot_tag, target_id in targets:
+            try:
+                result = self.test_running_slot_for_full_scan(slot_tag)
+            except Exception as exc:
+                result = {
+                    'status': 'error',
+                    'latency_ms': None,
+                    'checked_at': now_ts(),
+                    'error': str(exc)[-500:],
+                }
+            with self.lock:
+                self.latencies[target_id] = result
+                self.latency_checking_ids.discard(target_id)
+                self.save_latencies()
+            self.handle_draining_full_scan_results({target_id: result})
+
     def auto_checker_loop(self) -> None:
         while not self.stop_event.is_set():
             timeout = self.auto_check_wait_seconds()
@@ -4502,11 +4703,22 @@ class XrayManager:
                 continue
             if not self.auto_checker_enabled:
                 continue
+            active_check_id = ''
             try:
+                self.check_draining_slots_health()
+                with self.lock:
+                    active_slot = self.slots[self.active_slot_tag]
+                    active_check_id = self.active_candidate_id or active_slot.candidate_id or (
+                        active_slot.candidate.id if active_slot.candidate is not None else ''
+                    )
+                    if active_check_id:
+                        self.latency_checking_ids.add(active_check_id)
                 success, latency_ms, checks, error = self.check_active_tunnel()
                 checked_at = now_ts()
                 check_details = self.format_probe_results(checks) or 'both endpoints failed'
                 with self.lock:
+                    if active_check_id:
+                        self.latency_checking_ids.discard(active_check_id)
                     self.state['auto_check_last_at'] = checked_at
                     if success:
                         self.state['auto_check_failures'] = 0
@@ -4524,6 +4736,14 @@ class XrayManager:
                         failures = int(self.state.get('auto_check_failures') or 0) + 1
                         self.state['auto_check_failures'] = failures
                         self.state['auto_check_last_error'] = error
+                        if active_check_id:
+                            self.latencies[active_check_id] = {
+                                'status': 'error',
+                                'latency_ms': None,
+                                'checked_at': checked_at,
+                                'error': error,
+                            }
+                            self.save_latencies()
                         self.save_state()
 
                 if success:
@@ -4572,6 +4792,10 @@ class XrayManager:
                 )
             except Exception as exc:
                 log(f'auto-check error: {exc}', error=True)
+            finally:
+                if active_check_id:
+                    with self.lock:
+                        self.latency_checking_ids.discard(active_check_id)
 
     def periodic_update_loop(self) -> None:
         while not self.stop_event.wait(5):
@@ -4653,35 +4877,38 @@ class XrayManager:
                 if is_active and self.restart_on_runtime_error:
                     os._exit(1)
 
-    def rebind_slot_candidates(self) -> bool:
-        """Bind running slots to objects from the current subscription list.
+    def unique_candidate_match(self, predicate: Callable[[Candidate], bool]) -> Candidate | None:
+        matches = [item for item in self.candidates if predicate(item)]
+        return matches[0] if len(matches) == 1 else None
 
-        Candidate identifiers can change after a subscription refresh even when
-        the actual outbound is unchanged. Keeping stale Candidate objects in a
-        slot makes the first UI status response unable to mark the active or
-        draining card until another operation rewrites the slot state.
+    def rebind_slot_candidates(self) -> bool:
+        """Rebind running slots without guessing by display name.
+
+        A subscription refresh may rebuild candidate IDs, but a running Xray
+        process still uses the exact configuration that was written into its
+        slot. Rebinding therefore uses only an exact candidate ID or a unique full-profile fingerprint.
+        If the outbound disappeared from the refreshed subscription, the stale
+        slot candidate is intentionally retained and displayed as a normal
+        outbound until that running slot is stopped.
         """
         changed = False
         for tag, slot in self.slots.items():
             if not slot.running():
                 continue
+            stale = slot.candidate
             match: Candidate | None = None
             if tag == self.active_slot_tag and self.active_candidate_id:
                 match = self.candidate_by_id(self.active_candidate_id)
             if match is None and slot.candidate_id:
                 match = self.candidate_by_id(slot.candidate_id)
-            if match is None and slot.candidate is not None:
-                match = next(
-                    (item for item in self.candidates if self.same_outbound(item, slot.candidate)),
-                    None,
+            if match is None and stale is not None and stale.fingerprint:
+                match = self.unique_candidate_match(
+                    lambda item: item.fingerprint == stale.fingerprint
                 )
-            if match is None and slot.candidate_name:
-                match = next(
-                    (item for item in self.candidates if item.name == slot.candidate_name),
-                    None,
+            if match is None and stale is None and slot.observed_outbound_tag:
+                match = self.unique_candidate_match(
+                    lambda item: item.outbound_tag == slot.observed_outbound_tag
                 )
-            if match is None and slot.observed_outbound_tag:
-                match = self.candidate_by_tag(slot.observed_outbound_tag)
             if match is None:
                 continue
             if slot.candidate_id != match.id or slot.candidate is not match:
@@ -4718,35 +4945,76 @@ class XrayManager:
             active_slot = self.slots[self.active_slot_tag]
             process_running = active_slot.running()
             active, selected, mismatch = self.effective_active_candidate()
-            effective_id = active.id if active else ''
-            active_slot_candidate = active_slot.candidate or selected or active
+            runtime_active_candidate = active_slot.candidate or selected or active
+            effective_id = runtime_active_candidate.id if runtime_active_candidate else ''
+            represented_slots: set[str] = set()
             candidates = []
             for item in self.candidates:
                 assigned_slots = [
                     tag for tag, slot in self.slots.items()
-                    if slot.running() and self.same_candidate_identity(
-                        item,
-                        slot.candidate or self.candidate_by_id(slot.candidate_id),
-                    )
+                    if slot.running() and self.same_candidate_identity(item, slot.candidate)
                 ]
+                represented_slots.update(assigned_slots)
                 draining_slots = [
                     tag for tag in assigned_slots if self.slots[tag].draining
                 ]
-                is_active = self.same_candidate_identity(item, active_slot_candidate)
+                is_active = bool(
+                    process_running and self.active_slot_tag in assigned_slots
+                )
                 payload = item.public(self.latencies.get(item.id), is_active)
                 payload['slot_tags'] = assigned_slots
                 payload['draining_slots'] = draining_slots
                 payload['draining'] = bool(draining_slots)
                 payload['excluded'] = self.candidate_is_excluded(item)
+                payload['checking'] = item.id in getattr(self, 'latency_checking_ids', set())
+                candidates.append(payload)
+
+            # A running slot may still use an outbound removed by a subscription
+            # refresh. Keep it visible as a normal card until the slot finishes,
+            # without attaching it to a similarly named replacement.
+            for tag, slot in self.slots.items():
+                if not slot.running() or tag in represented_slots:
+                    continue
+                stale = slot.candidate
+                stale_id = slot.candidate_id or (stale.id if stale else '')
+                display_id = self.slot_candidate_id(tag)
+                latency = self.latencies.get(display_id)
+                if latency is None and stale_id:
+                    latency = self.latencies.get(stale_id)
+                payload = {
+                    'id': display_id,
+                    'source_index': stale.source_index if stale else -1,
+                    'outbound_index': stale.outbound_index if stale else -1,
+                    'outbound_tag': (
+                        stale.outbound_tag if stale else slot.observed_outbound_tag
+                    ),
+                    'name': slot.candidate_name or (stale.name if stale else '') or f'Слот {tag}',
+                    'protocol': stale.protocol if stale else '',
+                    'server': stale.server if stale else '',
+                    'port': stale.port if stale else None,
+                    'country_code': stale.country_code if stale else '',
+                    'fingerprint': stale.fingerprint if stale else '',
+                    'latency': latency,
+                    'active': bool(process_running and tag == self.active_slot_tag),
+                    'slot_tags': [tag],
+                    'draining_slots': [tag] if slot.draining else [],
+                    'draining': bool(slot.draining),
+                    'excluded': False,
+                    'checking': display_id in getattr(self, 'latency_checking_ids', set()),
+                }
                 candidates.append(payload)
             protocols = sorted({item.protocol for item in self.candidates})
+            countries = sorted({
+                item.country_code for item in self.candidates
+                if item.country_code
+            })
             available_count = sum(
-                1 for item in self.candidates
-                if (self.latencies.get(item.id) or {}).get('status') == 'ok'
+                1 for item in candidates
+                if (item.get('latency') or {}).get('status') == 'ok'
             )
             unavailable_count = sum(
-                1 for item in self.candidates
-                if (self.latencies.get(item.id) or {}).get('status') == 'error'
+                1 for item in candidates
+                if (item.get('latency') or {}).get('status') == 'error'
             )
             slots_payload = {}
             for tag, slot in self.slots.items():
@@ -4788,18 +5056,19 @@ class XrayManager:
                 'xray_version': self.xray_version(),
                 'started_at': self.started_at,
                 'xray_running': process_running,
-                'active': active.public(self.latencies.get(active.id), True) if active else None,
+                'active': runtime_active_candidate.public(self.latencies.get(runtime_active_candidate.id), True) if runtime_active_candidate else None,
                 'selected_active': selected.public(self.latencies.get(selected.id), selected.id == effective_id) if selected else None,
                 'observed_outbound_tag': active_slot.observed_outbound_tag,
                 'observed_outbound_at': active_slot.observed_outbound_at,
                 'route_mismatch': mismatch,
                 'candidates': candidates,
                 'protocols': protocols,
+                'countries': countries,
                 'availability': {
                     'available': available_count,
                     'unavailable': unavailable_count,
-                    'untested': max(0, len(self.candidates) - available_count - unavailable_count),
-                    'total': len(self.candidates),
+                    'untested': max(0, len(candidates) - available_count - unavailable_count),
+                    'total': len(candidates),
                 },
                 'subscription': {
                     'updated_at': self.state.get('subscription_updated_at'),
@@ -4819,6 +5088,7 @@ class XrayManager:
                     'enabled': self.auto_checker_enabled,
                     'switch_to_best': self.auto_switch_best_enabled,
                     'preferred_country': getattr(self, 'auto_switch_preferred_country', ''),
+                    'preferred_protocol': getattr(self, 'auto_switch_preferred_protocol', ''),
                     'excluded': self.auto_switch_excluded,
                     'min_ping_delta_ms': self.auto_switch_min_ping_delta_ms,
                     'interval_seconds': self.auto_check_interval_seconds,
@@ -4869,11 +5139,20 @@ class XrayManager:
     def select_candidate(self, candidate_id: str) -> None:
         with self.lock:
             candidate = self.candidate_by_id(candidate_id)
+            slot = None if candidate is not None else self.running_slot_by_candidate_id(candidate_id)
+            if candidate is None and slot is not None:
+                candidate = slot.candidate
             if candidate is None:
                 raise ValueError('Outbound не найден')
             already_active = (
-                candidate.id == self.active_candidate_id
-                and self.slots[self.active_slot_tag].running()
+                (
+                    slot is not None
+                    and slot is self.slots[self.active_slot_tag]
+                )
+                or (
+                    candidate.id == self.active_candidate_id
+                    and self.slots[self.active_slot_tag].running()
+                )
             )
         if already_active:
             return
@@ -5186,6 +5465,12 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
                 return
             if path.endswith('/api/preferred-country'):
                 self.send_json(self.manager.set_preferred_country(payload.get('country')))
+                return
+            if path.endswith('/api/preferences'):
+                self.send_json(self.manager.set_selection_preferences(
+                    payload.get('country'),
+                    payload.get('protocol'),
+                ))
                 return
             if path.endswith('/api/settings'):
                 changes = payload.get('changes') if isinstance(payload.get('changes'), dict) else payload

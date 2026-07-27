@@ -1,5 +1,5 @@
 name: Xray Proxy Manager
-version: "0.7.3"
+version: "0.7.4"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
 description: "Управление Xray через один или два SOCKS5-слота, проверка outbound и безопасное переключение"
@@ -38,6 +38,7 @@ options:
   auto_checker_enabled: true
   auto_switch_best_enabled: true
   auto_switch_preferred_country: ""
+  auto_switch_preferred_protocol: ""
   auto_switch_excluded: "RU"
   auto_switch_min_ping_delta_ms: 100
   auto_check_interval_seconds: 60
@@ -92,6 +93,7 @@ schema:
   auto_checker_enabled: bool
   auto_switch_best_enabled: bool
   auto_switch_preferred_country: str?
+  auto_switch_preferred_protocol: str?
   auto_switch_excluded: str
   auto_switch_min_ping_delta_ms: int(0,10000)
   auto_check_interval_seconds: int(10,86400)

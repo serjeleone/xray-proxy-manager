@@ -16,8 +16,11 @@ const state = {
   logWrapDisabled: true,
   savedAutoChecker: null,
   savedSubscription: null,
+  protocolsSignature: '',
   preferredCountriesSignature: '',
   preferredCountryDraft: null,
+  preferredProtocolsSignature: '',
+  preferredProtocolDraft: null,
   statusRefreshDeferred: false,
   changelogOpen: false,
   releaseNotes: [],
@@ -158,7 +161,7 @@ function formatHostPort(host, port) {
 
 function protocolMeta(item) {
   const endpoint = item.server ? `${item.server}${item.port ? `:${item.port}` : ''}` : 'адрес скрыт в конфигурации';
-  return `${endpoint} · ${item.outbound_tag}`;
+  return [endpoint, item.outbound_tag].filter(Boolean).join(' · ');
 }
 
 function latencyRank(item) {
@@ -167,60 +170,20 @@ function latencyRank(item) {
   return Number.POSITIVE_INFINITY;
 }
 
-function sameCandidateIdentity(left, right) {
-  if (!left || !right) return false;
-  if (left.id && right.id) return left.id === right.id;
-  if (left.fingerprint && right.fingerprint) return left.fingerprint === right.fingerprint;
-  if (left.id || right.id || left.fingerprint || right.fingerprint) return false;
-  return Boolean(
-    left.outbound_tag && right.outbound_tag
-    && String(left.protocol || '').toLowerCase() === String(right.protocol || '').toLowerCase()
-    && String(left.server || '').toLowerCase() === String(right.server || '').toLowerCase()
-    && Number(left.port || 0) === Number(right.port || 0)
-    && left.outbound_tag === right.outbound_tag
-  );
-}
-
-function slotCandidateReference(slot) {
+function candidateRuntimeState(item) {
+  const slotTags = Array.isArray(item.slot_tags) ? item.slot_tags.filter(Boolean) : [];
+  const drainingSlots = Array.isArray(item.draining_slots)
+    ? item.draining_slots.filter((tag) => slotTags.includes(tag))
+    : [];
   return {
-    id: slot?.candidate_id || '',
-    fingerprint: slot?.candidate_fingerprint || '',
-    outbound_tag: slot?.candidate_outbound_tag || '',
-    protocol: slot?.candidate_protocol || '',
-    server: slot?.candidate_server || '',
-    port: slot?.candidate_port ?? null,
+    active: Boolean(item.active && slotTags.length),
+    slotTags,
+    drainingSlots,
   };
 }
 
-function candidateRuntimeState(item, payload) {
-  const blueGreen = payload?.blue_green || {};
-  const slots = blueGreen.slots || {};
-  const slotTags = new Set(Array.isArray(item.slot_tags) ? item.slot_tags : []);
-  const drainingSlots = new Set(Array.isArray(item.draining_slots) ? item.draining_slots : []);
-
-  Object.entries(slots).forEach(([tag, slot]) => {
-    if (!slot?.running || !sameCandidateIdentity(item, slotCandidateReference(slot))) return;
-    slotTags.add(tag);
-    if (slot.draining) drainingSlots.add(tag);
-  });
-
-  const activeSlot = slots[blueGreen.active_slot];
-  const active = Boolean(
-    item.active
-    || sameCandidateIdentity(item, payload?.active)
-    || (activeSlot?.running && sameCandidateIdentity(item, slotCandidateReference(activeSlot)))
-  );
-
-  if (active && blueGreen.active_slot) slotTags.add(blueGreen.active_slot);
-  return {
-    active,
-    slotTags: [...slotTags],
-    drainingSlots: [...drainingSlots],
-  };
-}
-
-function candidatePinPriority(item, payload) {
-  const runtime = candidateRuntimeState(item, payload);
+function candidatePinPriority(item) {
+  const runtime = candidateRuntimeState(item);
   if (runtime.active) return 0;
   if (runtime.drainingSlots.length) return 1;
   if (runtime.slotTags.length) return 2;
@@ -263,6 +226,7 @@ function autoCheckerFormValues() {
     auto_check_max_latency_ms: Number.parseInt($('autoCheckMaxLatency').value, 10),
     auto_best_check_interval_seconds: Number.parseInt($('autoBestCheckInterval').value, 10),
     auto_switch_preferred_country: $('autoSwitchPreferredCountry').value,
+    auto_switch_preferred_protocol: $('autoSwitchPreferredProtocol').value,
     auto_switch_excluded: normalizeAutoSwitchExclusions($('autoSwitchExcluded').value),
     auto_switch_min_ping_delta_ms: Number.parseInt($('autoSwitchMinPingDelta').value, 10),
   };
@@ -282,8 +246,8 @@ function renderPreferredCountries(payload) {
   const checker = payload.auto_checker || {};
   const desired = state.preferredCountryDraft ?? checker.preferred_country ?? select.value ?? '';
   const codes = [...new Set(
-    (payload.candidates || [])
-      .map((item) => String(item.country_code || '').toUpperCase())
+    (payload.countries || [])
+      .map((item) => String(item || '').toUpperCase())
       .filter((code) => /^[A-Z]{2}$/.test(code))
       .concat(/^[A-Z]{2}$/.test(desired) ? [desired] : [])
   )].sort((left, right) => countryDisplayName(left).localeCompare(
@@ -302,6 +266,30 @@ function renderPreferredCountries(payload) {
     state.preferredCountriesSignature = signature;
   }
   select.value = codes.includes(desired) ? desired : '';
+}
+
+function renderPreferredProtocols(payload) {
+  const select = $('autoSwitchPreferredProtocol');
+  const checker = payload.auto_checker || {};
+  const desired = state.preferredProtocolDraft ?? checker.preferred_protocol ?? select.value ?? '';
+  const protocols = [...new Set(
+    ['VLESS']
+      .concat(payload.protocols || [])
+      .concat(desired ? [desired] : [])
+      .map((value) => String(value || '').trim().toUpperCase())
+      .filter(Boolean)
+  )].sort((left, right) => left.localeCompare(right, 'ru', { sensitivity: 'base' }));
+
+  if (select.matches(':focus')) return;
+  const signature = protocols.join('|');
+  if (signature !== state.preferredProtocolsSignature) {
+    select.innerHTML = [
+      '<option value="">Без приоритета</option>',
+      ...protocols.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`),
+    ].join('');
+    state.preferredProtocolsSignature = signature;
+  }
+  select.value = protocols.includes(desired) ? desired : '';
 }
 
 function subscriptionFormValues() {
@@ -327,9 +315,10 @@ function sortedAndFilteredCandidates(items, payload) {
   const protocol = settings.protocol_filter;
   const maxPing = settings.max_ping_ms;
   const filtered = items.filter((item) => {
+    // Runtime slots always remain visible, even when their outbound is now
+    // excluded, unavailable, outside the filter, or absent from the subscription.
+    if (candidatePinPriority(item) < 3) return true;
     if (settings.hide_excluded && item.excluded) return false;
-    // Other filters do not hide working slots.
-    if (candidatePinPriority(item, payload) < 3) return true;
     if (protocol !== 'all' && item.protocol !== protocol) return false;
     if (settings.hide_unavailable && item.latency?.status === 'error') return false;
     if (maxPing > 0 && item.latency?.status === 'ok' && item.latency.latency_ms > maxPing) return false;
@@ -339,7 +328,7 @@ function sortedAndFilteredCandidates(items, payload) {
   const [field, direction] = settings.sort.split('-');
   const factor = direction === 'desc' ? -1 : 1;
   filtered.sort((a, b) => {
-    const pinDifference = candidatePinPriority(a, payload) - candidatePinPriority(b, payload);
+    const pinDifference = candidatePinPriority(a) - candidatePinPriority(b);
     if (pinDifference !== 0) return pinDifference;
     if (field === 'ping') {
       const av = latencyRank(a); const bv = latencyRank(b);
@@ -357,6 +346,7 @@ function sortedAndFilteredCandidates(items, payload) {
 }
 
 function pingMarkup(item) {
+  if (item.checking) return '<span class="ping checking">проверяется…</span>';
   const latency = item.latency;
   if (!latency) return '<span class="ping">не проверен</span>';
   if (latency.status === 'ok') {
@@ -368,10 +358,15 @@ function pingMarkup(item) {
 function renderProtocols(protocols) {
   const select = $('protocolFilter');
   const current = select.value || 'all';
-  const values = ['all', ...(protocols || [])];
-  select.innerHTML = values.map((value) => (
-    `<option value="${escapeHtml(value)}">${value === 'all' ? 'Все протоколы' : escapeHtml(value)}</option>`
-  )).join('');
+  const values = ['all', ...[...new Set(protocols || [])]];
+  if (select.matches(':focus')) return;
+  const signature = values.join('|');
+  if (signature !== state.protocolsSignature) {
+    select.innerHTML = values.map((value) => (
+      `<option value="${escapeHtml(value)}">${value === 'all' ? 'Все протоколы' : escapeHtml(value)}</option>`
+    )).join('');
+    state.protocolsSignature = signature;
+  }
   select.value = values.includes(current) ? current : 'all';
 }
 
@@ -379,7 +374,7 @@ function renderCandidates(payload) {
   const allItems = payload.candidates || [];
   const items = sortedAndFilteredCandidates(allItems, payload);
   const availability = payload.availability || {};
-  const total = availability.total || allItems.length;
+  const total = allItems.length;
   const untested = availability.untested || 0;
   const hiddenByFilters = Math.max(0, total - items.length);
   $('outboundHeading').textContent = `Доступные outbound (доступно ${availability.available || 0}, недоступно ${availability.unavailable || 0}${untested ? `, не проверено ${untested}` : ''})`;
@@ -395,20 +390,23 @@ function renderCandidates(payload) {
     payload.jobs?.latency?.running || payload.jobs?.refresh?.running || payload.jobs?.switch?.running
   );
   $('outboundList').innerHTML = items.map((item) => {
-    const runtime = candidateRuntimeState(item, payload);
+    const runtime = candidateRuntimeState(item);
     const slotTags = runtime.slotTags;
     const drainingSlots = runtime.drainingSlots;
     const slotBadges = slotTags.map((tag) => (
       `<span class="slot-badge" title="Слот ${escapeHtml(tag)}">${tag === 'xray-a' ? 'A' : 'B'}</span>`
     )).join('');
     const drainingSlot = drainingSlots[0] || '';
+    const protocolChip = item.protocol
+      ? `<span class="protocol-chip">${escapeHtml(item.protocol)}</span>`
+      : '';
     return `
-    <article class="outbound-card ${runtime.active ? 'active' : ''} ${drainingSlot ? 'draining' : ''} ${item.latency?.status === 'error' ? 'unavailable' : ''}">
+    <article class="outbound-card ${runtime.active ? 'active' : ''} ${drainingSlot ? 'draining' : ''} ${item.latency?.status === 'error' && !item.checking ? 'unavailable' : ''}">
       <div class="outbound-main">
         <div class="outbound-title-row">
           ${slotBadges}
           <span class="outbound-title" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
-          <span class="protocol-chip">${escapeHtml(item.protocol)}</span>
+          ${protocolChip}
           ${runtime.active ? '<span class="active-chip">АКТИВЕН</span>' : ''}
           ${drainingSlot ? '<span class="draining-chip">ЗАВЕРШАЕТ СОЕДИНЕНИЯ</span>' : ''}
         </div>
@@ -453,7 +451,6 @@ function renderTraffic(payload) {
   }
 
   $('statusDot').className = 'status-dot ok';
-  $('xrayState').textContent = 'Xray работает';
   if (!router.configured) {
     button.classList.add('unknown');
     hint.textContent = 'Управление внешним правилом отключено в настройках приложения';
@@ -483,7 +480,6 @@ function renderTraffic(payload) {
     button.classList.add('paused');
     button.title = `Включить правило ${ruleName}`;
     $('statusDot').className = 'status-dot warn';
-    $('xrayState').textContent = 'Внешнее правило отключено';
     hint.textContent = `Правило ${ruleName} приостановлено · Нажмите кнопку выше, чтобы возобновить.`;
     hint.classList.add('warn');
   }
@@ -491,6 +487,7 @@ function renderTraffic(payload) {
 
 function renderRuntimeStatus(payload) {
   const selector = payload.selector || {};
+  const blueGreen = payload.blue_green || {};
   const hint = $('selectorHint');
   hint.className = 'traffic-hint';
 
@@ -510,10 +507,12 @@ function renderRuntimeStatus(payload) {
     hint.classList.add('warn');
     return;
   }
-  const selectorLabel = document.createTextNode('Текущий активный селектор: ');
-  const selectorValue = document.createElement('strong');
-  selectorValue.textContent = selector.current || '—';
-  hint.replaceChildren(selectorLabel, selectorValue);
+  const currentSelector = selector.current || '—';
+  const drainingSlot = Object.values(blueGreen.slots || {}).find((slot) => slot.draining);
+  hint.textContent = `Текущий активный селектор: [${currentSelector}]`;
+  if (drainingSlot) {
+    hint.textContent += ` · Завершение соединений селектора [${drainingSlot.tag}] в количестве: ${drainingSlot.drain_connections || 0} шт.`;
+  }
   if (!selector.connections_supported) {
     $('statusDot').className = 'status-dot warn';
     hint.append(document.createTextNode(` · ${selector.error || 'учёт соединений недоступен'}; автоматическое завершение старого слота приостановлено`));
@@ -535,6 +534,9 @@ function initializeSettings(payload) {
   renderPreferredCountries(payload);
   $('autoSwitchPreferredCountry').value = checker.preferred_country || '';
   state.preferredCountryDraft = null;
+  renderPreferredProtocols(payload);
+  $('autoSwitchPreferredProtocol').value = checker.preferred_protocol || '';
+  state.preferredProtocolDraft = null;
   $('autoSwitchExcluded').value = checker.excluded ?? 'RU';
   $('autoSwitchMinPingDelta').value = checker.min_ping_delta_ms ?? 100;
   $('subscriptionUrl').value = subscription.url || '';
@@ -556,6 +558,7 @@ function render(payload) {
   initializeSettings(payload);
   renderProtocols(payload.protocols || []);
   renderPreferredCountries(payload);
+  renderPreferredProtocols(payload);
   const backendProtocol = payload.ui_settings?.protocol_filter || 'all';
   if (!$('protocolFilter').matches(':focus')) $('protocolFilter').value = backendProtocol;
 
@@ -564,6 +567,8 @@ function render(payload) {
   const active = payload.active;
   $('activeName').textContent = active?.name || 'Активный outbound не определён';
   const blueGreen = payload.blue_green || {};
+  const modeLabel = blueGreen.mode === 'single' ? 'Однослотовый режим' : 'Двухслотовый режим';
+  $('xrayState').textContent = `${payload.xray_running ? 'Xray работает' : 'Xray остановлен'} · ${modeLabel}`;
   const activeSlot = blueGreen.slots?.[blueGreen.active_slot];
   const haHost = payload.home_assistant_host || 'host';
   const inboundEndpoint = activeSlot
@@ -572,18 +577,8 @@ function render(payload) {
   const outboundEndpoint = active?.server
     ? `${formatHostPort(active.server, active.port)} (${String(active.protocol || '—').toUpperCase()})`
     : 'Outbound не определён';
-  const metaParts = [`${inboundEndpoint} / ${outboundEndpoint}`];
-  metaParts.push(blueGreen.mode === 'single' ? 'Однослотовый режим' : 'Двухслотовый режим');
-  let activeMeta = metaParts.join(' · ');
+  const activeMeta = `${inboundEndpoint} · ${outboundEndpoint}`;
   const drainingSlot = Object.values(blueGreen.slots || {}).find((slot) => slot.draining);
-  if (drainingSlot) {
-    if (drainingSlot.drain_connections > 0) {
-      activeMeta += ` / ${drainingSlot.tag} завершает старые соединения в количестве: ${drainingSlot.drain_connections} шт.`;
-    } else {
-      const drainState = drainingSlot.drain_zero_since ? 'защитная пауза' : 'проверка активности';
-      activeMeta += ` / ${drainingSlot.tag} завершает старые соединения: ${drainState}`;
-    }
-  }
   $('activeMeta').textContent = activeMeta;
   const topStop = $('stopDrainTopButton');
   if (drainingSlot) {
@@ -594,17 +589,13 @@ function render(payload) {
     topStop.dataset.stopSlot = '';
     topStop.classList.add('hidden');
   }
-  if (payload.route_mismatch && payload.selected_active) {
-    $('activeMeta').textContent += ` · выбран в конфигурации: ${payload.selected_active.name}`;
-  }
-
   const checker = payload.auto_checker || {};
   $('autoCheckerState').textContent = checker.enabled ? 'Включён' : 'Выключен';
   const slotLastCheck = formatRelative(checker.last_check_at);
   const fullLastCheck = formatRelative(checker.last_best_check_at);
   const lastChecks = `Последняя проверка: ${slotLastCheck}/${fullLastCheck}`;
   const bestMode = checker.switch_to_best
-    ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · предпочитаемая страна: ${checker.preferred_country || 'нет'} · исключения: ${checker.excluded || 'нет'}`
+    ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · предпочитаемая страна: ${checker.preferred_country || 'нет'} · предпочитаемый протокол: ${checker.preferred_protocol || 'нет'} · исключения: ${checker.excluded || 'нет'}`
     : ' · автопереключение выключено';
   const checkerMode = checker.enabled ? '' : ' · авто-чекер выключен';
   const lastError = checker.last_error ? ` · последняя ошибка: ${checker.last_error}` : '';
@@ -911,7 +902,10 @@ function toggleChangelog(event) {
 }
 
 function statusRefreshPaused() {
-  return state.logsOpen || $('autoSwitchPreferredCountry').matches(':focus');
+  return state.logsOpen
+    || $('autoSwitchPreferredCountry').matches(':focus')
+    || $('autoSwitchPreferredProtocol').matches(':focus')
+    || $('protocolFilter').matches(':focus');
 }
 
 async function fetchStatus(force = false) {
@@ -1086,9 +1080,12 @@ async function saveSettings(changes, successMessage) {
 async function saveAutoChecker() {
   const changes = autoCheckerFormValues();
   const previousCountry = state.savedAutoChecker?.auto_switch_preferred_country || '';
+  const previousProtocol = state.savedAutoChecker?.auto_switch_preferred_protocol || '';
   const preferredCountryChanged = changes.auto_switch_preferred_country !== previousCountry;
+  const preferredProtocolChanged = changes.auto_switch_preferred_protocol !== previousProtocol;
   const ordinaryChanges = { ...changes };
   delete ordinaryChanges.auto_switch_preferred_country;
+  delete ordinaryChanges.auto_switch_preferred_protocol;
   $('autoSwitchExcluded').value = changes.auto_switch_excluded;
 
   try {
@@ -1102,15 +1099,17 @@ async function saveAutoChecker() {
     }
 
     let message = 'Настройки авто-чекера сохранены';
-    if (preferredCountryChanged) {
-      const countryResult = await post('api/preferred-country', {
+    if (preferredCountryChanged || preferredProtocolChanged) {
+      const preferenceResult = await post('api/preferences', {
         country: changes.auto_switch_preferred_country,
+        protocol: changes.auto_switch_preferred_protocol,
       });
-      message = countryResult.message || message;
+      message = preferenceResult.message || message;
     }
 
     state.savedAutoChecker = { ...changes };
     state.preferredCountryDraft = null;
+    state.preferredProtocolDraft = null;
     updateSaveButtons();
     toast(message);
     await fetchStatus(true);
@@ -1212,9 +1211,19 @@ $('autoSwitchPreferredCountry').addEventListener('change', () => {
 $('autoSwitchPreferredCountry').addEventListener('blur', () => {
   if (state.statusRefreshDeferred) fetchStatus(true);
 });
+$('autoSwitchPreferredProtocol').addEventListener('change', () => {
+  state.preferredProtocolDraft = $('autoSwitchPreferredProtocol').value;
+  updateSaveButtons();
+});
+$('autoSwitchPreferredProtocol').addEventListener('blur', () => {
+  if (state.statusRefreshDeferred) fetchStatus(true);
+});
 ['subscriptionUrl', 'subscriptionInterval'].forEach((id) => $(id).addEventListener('input', updateSaveButtons));
 ['sortSelect', 'protocolFilter', 'maxPing', 'hideUnavailable', 'hideExcluded'].forEach((id) => {
   $(id).addEventListener(id === 'maxPing' ? 'input' : 'change', scheduleFilterSave);
+});
+$('protocolFilter').addEventListener('blur', () => {
+  if (state.statusRefreshDeferred) fetchStatus(true);
 });
 $('applyRestartButton').addEventListener('click', () => {
   hideRestartModal();

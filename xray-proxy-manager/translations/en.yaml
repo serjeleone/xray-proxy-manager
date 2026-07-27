@@ -38,6 +38,9 @@ configuration:
   auto_switch_preferred_country:
     name: Preferred country
     description: ISO country code prioritized when selecting the best outbound; if no suitable servers from that country are available, all other servers are considered.
+  auto_switch_preferred_protocol:
+    name: Preferred protocol
+    description: Protocol prioritized when selecting the best outbound; available values are derived from the current subscription.
   auto_switch_excluded:
     name: Exclude from selection
     description: Comma-separated ISO country codes and text fragments; always excluded from automatic selection. To manually select a hidden outbound, clear the “Hide excluded” checkbox in the UI.

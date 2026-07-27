@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=16">
+  <link rel="stylesheet" href="style.css?ui=17">
 </head>
 <body>
   <main class="shell">
@@ -127,6 +127,13 @@
             <span>Предпочитаемая страна</span>
             <select id="autoSwitchPreferredCountry">
               <option value="">Без приоритета</option>
+            </select>
+          </label>
+          <label>
+            <span>Предпочитаемый протокол</span>
+            <select id="autoSwitchPreferredProtocol">
+              <option value="">Без приоритета</option>
+              <option value="VLESS">VLESS</option>
             </select>
           </label>
           <label>
@@ -271,6 +278,6 @@
     </div>
   </div>
 
-  <script src="app.js?ui=14"></script>
+  <script src="app.js?ui=15"></script>
 </body>
 </html>

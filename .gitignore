@@ -26,3 +26,11 @@ id_*
 /dist/
 /build/
 *.zip
+
+# Артефакты тестирования.
+.coverage
+coverage.xml
+coverage.json
+htmlcov/
+test-results/
+playwright-report/

@@ -1,0 +1,24 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "integration: component integration tests with local servers or filesystem",
+  "slow: tests that intentionally exercise retry or loop behavior",
+  "ui: browser-driven user interface tests",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["xray-proxy-manager"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 80
+precision = 1
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if __name__ == .__main__.:",
+  'raise SystemExit\(main\(\)\)',
+]

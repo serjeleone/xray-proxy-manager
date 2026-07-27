@@ -33,7 +33,7 @@ body {
 }
 button, input, select { font: inherit; }
 button, label, input, select { -webkit-tap-highlight-color: transparent; }
-button { color: inherit; -webkit-appearance: none; appearance: none; }
+button { color: inherit; -webkit-appearance: none; appearance: none; padding-bottom: 0; }
 button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 2px solid var(--spotify);
   outline-offset: 2px;
@@ -387,7 +387,8 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .ping.ok { color: #65e994; background: rgba(30,215,96,.09); border-color: rgba(30,215,96,.22); }
 .ping.bad { color: #ff98a2; background: rgba(241,94,108,.08); border-color: rgba(241,94,108,.2); }
-.mini-button { min-height: 34px; padding: 0 11px 1px; background: #303030; border: 1px solid var(--line); font-size: .75rem; }
+.ping.checking { color: var(--muted); background: #2b2b2b; border-color: var(--line); }
+.mini-button { min-height: 34px; padding: 0 11px; background: #303030; border: 1px solid var(--line); font-size: .75rem; }
 .mini-button.select { color: #07150c; background: var(--spotify); border-color: transparent; }
 .empty { padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 16px; }
 
@@ -454,6 +455,7 @@ body.modal-open { overflow: hidden; }
 .logs-wrap-button.active:hover:not(:disabled) { background: var(--spotify-hover); }
 .logs-close-button {
   width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; cursor: pointer;
+  padding: 1px 6px;
   border: 1px solid var(--line); border-radius: 50%; background: #2d2d2d;
 }
 .logs-close-button:hover { background: #3a3a3a; }
@@ -544,7 +546,7 @@ body.modal-open { overflow: hidden; }
   .hero-primary-row h2 { max-height: 2.2em; font-size: 1.48rem; line-height: 1.08; }
   .hero-details { gap: 3px; }
   .hero-actions { gap: 8px; margin-top: auto; padding-top: 15px; }
-  .hero-actions .button { min-height: 40px; padding: 0 13px 1px; font-size: .82rem; }
+  .hero-actions .button { min-height: 40px; padding: 0 13px; font-size: .82rem; }
   .settings-card { padding: 16px; }
   .subscription-fields { grid-template-columns: minmax(0, 1fr) 108px; gap: 9px; }
   .subscription-fields label { min-width: 0; }
@@ -598,8 +600,7 @@ body.modal-open { overflow: hidden; }
   .logs-scroll-controls { right: calc(16px - var(--logs-mobile-right-shift)); bottom: 54px; }
   .logs-scroll-button { width: 34px; height: 34px; }
   .logs-footer { padding: 10px calc(16px - var(--logs-mobile-right-shift)) 10px 15px; flex-direction: row; }
-  .button, .mini-button { padding-top: 0; padding-bottom: 1px; }
-  .button.compact { padding-top: 0; padding-bottom: 1px; font-size: .81rem; }
+  .button.compact { font-size: .81rem; }
   .mini-button { font-size: .78rem; }
   .hero-actions {
     flex-wrap: nowrap;
@@ -761,7 +762,8 @@ body.modal-open { overflow: hidden; }
 }
 .outbound-title-row > .protocol-chip,
 .outbound-title-row > .active-chip,
-.outbound-title-row > .draining-chip { flex: 0 0 auto; }
+.outbound-title-row > .draining-chip,
+.outbound-title-row > .missing-chip { flex: 0 0 auto; }
 .outbound-title { max-width: 100%; }
 .logs-file-controls .logs-scroll-button { opacity: .82; }
 
@@ -775,30 +777,8 @@ body.modal-open { overflow: hidden; }
   .outbound-actions .ping { flex: 1 1 auto; }
 }
 
-/* Mobile vertical alignment for all text controls and action buttons. */
+/* Text controls inherit the desktop centering model on mobile. */
 @media (max-width: 760px) {
-  input[type="number"],
-  input[type="text"],
-  input[type="url"],
-  input[type="search"],
-  input[type="password"],
-  input[type="email"],
-  input[type="tel"],
-  select {
-    height: 42px;
-    min-height: 42px;
-    padding-top: 0;
-    padding-bottom: 0;
-    line-height: 40px;
-  }
-
-  .button,
-  .mini-button {
-    padding-top: 0;
-    padding-bottom: 0;
-    line-height: 1;
-  }
-
   .subscription-actions {
     gap: 10px;
   }

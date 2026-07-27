@@ -114,11 +114,12 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install validation dependencies
+      - name: Install test dependencies
         run: |
           python -m pip install \
             --disable-pip-version-check \
-            PyYAML
+            -r requirements-test.txt
+          python -m playwright install --with-deps chromium
 
       - name: Validate Python
         run: |
@@ -130,11 +131,22 @@ jobs:
           node --check \
             xray-proxy-manager/web/app.js
 
-      - name: Test slot management logic
+      - name: Test backend and internal processes
         run: |
-          python -m unittest discover \
-            -s tests \
-            -v
+          python -m pytest \
+            tests \
+            --ignore=tests/ui \
+            --cov=xray-proxy-manager \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=80
+
+      - name: Test web UI interactions
+        run: |
+          python -m pytest \
+            tests/ui \
+            -q
 
       - name: Validate shell scripts
         run: |

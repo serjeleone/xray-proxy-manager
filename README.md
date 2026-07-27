@@ -62,9 +62,10 @@ selector_api_secret: ""
 selector_tag: "xray-active"
 auto_switch_excluded: "RU, Определенный_сервер"
 auto_switch_preferred_country: "NL"
+auto_switch_preferred_protocol: "VLESS"
 primary_test_url: "https://www.gstatic.com/generate_204"
 secondary_test_url: "https://cp.cloudflare.com/generate_204"
-ui_port: 8099
+ui_port: 8090
 ui_hide_excluded: true
 ```
 
@@ -78,6 +79,8 @@ ui_hide_excluded: true
 
 `auto_switch_preferred_country` задаёт ISO-код страны с приоритетом. При выборе страны в UI уже известный подходящий outbound этой страны сразу проходит пред-switch проверку и активируется, после чего выполняется полная проверка. Если хотя бы один outbound этой страны доступен, не исключён и укладывается в `auto_check_max_latency_ms`, лучший выбирается среди них. Иначе выбор выполняется среди всех подходящих outbound.
 
+`auto_switch_preferred_protocol` задаёт протокол с приоритетом. В UI список протоколов формируется из уникальных значений текущей подписки. При одновременном выборе страны и протокола выше ранжируются outbound, совпадающие с обоими условиями.
+
 Обновление подписки сначала выполняется напрямую, без SOCKS-слотов. Только при ошибке менеджер пробует уже запущенные слоты, начиная с активного. Новые данные применяются к списку outbound, а текущие процессы Xray продолжают работать до явного выбора конфигурации или смены режима.
 
 ## Документация
@@ -86,4 +89,4 @@ ui_hide_excluded: true
 
 ## Версия
 
-Текущая версия приложения: `0.7.3`.
+Текущая версия приложения: `0.7.4`.
