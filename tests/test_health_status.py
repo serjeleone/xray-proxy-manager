@@ -255,6 +255,7 @@ def test_effective_active_candidate_and_status_payload_keep_running_removed_outb
     instance.active_candidate_id = stale.id
     effective, subscription_candidate, mismatch = instance.effective_active_candidate()
     assert effective is stale and subscription_candidate is stale and mismatch is False
+    instance.state["last_switch_source"] = "manual_ui"
     payload = instance.status_payload()
     active_card = next(item for item in payload["candidates"] if item["active"])
     assert active_card["name"] == stale.name
@@ -262,7 +263,8 @@ def test_effective_active_candidate_and_status_payload_keep_running_removed_outb
     assert active_card["slot_tags"] == ["xray-a"]
     assert any(item["id"] == current.id for item in payload["candidates"])
     assert payload["blue_green"]["active_slot"] == "xray-a"
-    assert payload["release_notes"]["version"] == "v0.7.4"
+    assert payload["release_notes"]["version"] == "v0.7.5"
+    assert payload["auto_checker"]["last_switch_source"] == "manual_ui"
 
 
 def test_xray_version_select_initialize_and_shutdown(m, manager_factory, candidate_factory, monkeypatch):
@@ -279,6 +281,7 @@ def test_xray_version_select_initialize_and_shutdown(m, manager_factory, candida
     assert calls == []
     instance.active_candidate_id = "other"
     instance.select_candidate(candidate.id)
+    assert calls[-1][1]["source"] == "manual_ui"
     assert calls and calls[0][1]["preempt_draining"] is True
     with pytest.raises(ValueError, match="не найден"):
         instance.select_candidate("missing")

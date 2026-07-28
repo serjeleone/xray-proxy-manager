@@ -232,7 +232,7 @@ def isolated_paths(m, monkeypatch, tmp_path):
     (web / "style.css").write_text("style", encoding="utf-8")
     (web / "favicon.svg").write_text("svg", encoding="utf-8")
     changelog = tmp_path / "CHANGELOG.md"
-    changelog.write_text("## v0.7.4\n\n- Change one\n- Change two\n", encoding="utf-8")
+    changelog.write_text("## v0.7.5\n\n- Change one\n- Change two\n", encoding="utf-8")
 
     paths = {
         "OPTIONS_PATH": data / "options.json",

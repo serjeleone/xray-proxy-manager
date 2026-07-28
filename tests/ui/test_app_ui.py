@@ -63,7 +63,7 @@ def base_payload() -> dict:
         ),
     ]
     return {
-        "version": "0.7.4",
+        "version": "0.7.5",
         "xray_version": "Xray 26.7.11",
         "xray_running": True,
         "home_assistant_host": "192.0.2.250",
@@ -119,7 +119,7 @@ def base_payload() -> dict:
             "refresh": {"running": False, "message": ""},
             "switch": {"running": False, "message": ""},
         },
-        "release_notes": {"version": "0.7.4", "items": ["Тестовая версия"]},
+        "release_notes": {"version": "0.7.5", "items": ["Тестовая версия"]},
     }
 
 
@@ -175,7 +175,7 @@ def open_app(page: Page, web_app_html: str, payload: dict | None = None) -> ApiH
     harness = ApiHarness(copy.deepcopy(payload or base_payload()))
     page.route("**/api/**", harness.handler)
     page.set_content(web_app_html, wait_until="networkidle")
-    expect(page.locator("#versionBadge")).to_have_text("v0.7.4")
+    expect(page.locator("#versionBadge")).to_have_text("v0.7.5")
     return harness
 
 

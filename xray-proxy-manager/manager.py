@@ -54,7 +54,7 @@ WATCHDOG_PORT = 18099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.7.4'
+ADDON_VERSION = '0.7.5'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_TEST_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -809,6 +809,7 @@ class XrayManager:
             'subscription_consecutive_failures': 0,
             'last_switch_at': None,
             'last_switch_reason': '',
+            'last_switch_source': '',
             'auto_check_failures': 0,
             'auto_check_last_at': None,
             'auto_best_check_last_at': None,
@@ -1111,6 +1112,7 @@ class XrayManager:
                 self.restart_xray_for(
                     immediate_candidate,
                     f'preferred {preference_label} selected from UI',
+                    source='preference_ui',
                     preempt_draining=True,
                 )
                 immediate_switched = True
@@ -1218,9 +1220,15 @@ class XrayManager:
                 self.dual_slot_enabled = desired_mode
                 self.active_slot_tag = 'xray-a'
                 self.active_candidate_id = current_candidate.id
+            self.log_switch_request(
+                current_candidate,
+                'slot_mode_ui',
+                'slot mode changed from UI',
+            )
             self.start_initial_candidate(
                 current_candidate,
                 'slot mode changed from UI',
+                source='slot_mode_ui',
             )
 
             with self.lock:
@@ -1254,9 +1262,15 @@ class XrayManager:
                         else 'xray-a'
                     )
                     self.active_candidate_id = current_candidate.id
+                self.log_switch_request(
+                    current_candidate,
+                    'slot_mode_rollback',
+                    'rollback after failed slot mode change',
+                )
                 self.start_initial_candidate(
                     current_candidate,
                     'rollback after failed slot mode change',
+                    source='slot_mode_rollback',
                 )
             except Exception as rollback_exc:
                 log(f'could not restore previous slot mode: {rollback_exc}', error=True)
@@ -2753,7 +2767,8 @@ class XrayManager:
     def start_xray(self) -> None:
         candidate = self.candidate_by_id(self.active_candidate_id)
         if candidate is not None:
-            self.start_initial_candidate(candidate, 'Xray start')
+            self.log_switch_request(candidate, 'service_start', 'Xray start')
+            self.start_initial_candidate(candidate, 'Xray start', source='service_start')
             return
 
         expected_slot = self.active_slot_tag if self.dual_slot_enabled else 'xray-a'
@@ -2914,7 +2929,36 @@ class XrayManager:
             raise RuntimeError(f'{slot_tag} validation failed: {error}')
         return minimum, results
 
-    def start_initial_candidate(self, candidate: Candidate, reason: str) -> None:
+    @staticmethod
+    def switch_source_for_latency_job(source: str) -> str:
+        return {
+            'manual': 'manual_scan',
+            'auto-best': 'auto_best_check',
+            'startup': 'startup_scan',
+            'preferred-selection': 'preference_ui',
+            'preferred-country': 'preference_ui',
+            'preferred-protocol': 'preference_ui',
+        }.get(source, source or 'internal')
+
+    def log_switch_request(
+        self,
+        candidate: Candidate,
+        source: str,
+        reason: str,
+    ) -> None:
+        mode = 'dual' if self.dual_slot_enabled else 'single'
+        log(
+            f'switch requested: source={source}; mode={mode}; '
+            f'target={candidate.name} [{candidate.outbound_tag}]; reason={reason}'
+        )
+
+    def start_initial_candidate(
+        self,
+        candidate: Candidate,
+        reason: str,
+        *,
+        source: str = 'internal',
+    ) -> None:
         expected_slot = self.active_slot_tag if self.dual_slot_enabled else 'xray-a'
         if expected_slot not in SLOT_TAGS:
             expected_slot = 'xray-a'
@@ -2975,6 +3019,7 @@ class XrayManager:
             self.active_candidate_id = candidate.id
             self.state['last_switch_at'] = now_ts()
             self.state['last_switch_reason'] = reason
+            self.state['last_switch_source'] = source
             self.state['auto_check_failures'] = 0
             self.state['auto_check_last_error'] = ''
             self.latencies[candidate.id] = {
@@ -2992,7 +3037,10 @@ class XrayManager:
                 self.save_active_config(expected_slot, candidate)
             except Exception as exc:
                 log(f'could not save last-good active config: {exc}', error=True)
-            log(f'active outbound: {candidate.name} [{candidate.outbound_tag}] via {expected_slot}')
+            log(
+                f'active outbound: {candidate.name} [{candidate.outbound_tag}] via {expected_slot}; '
+                f'source={source}'
+            )
         except Exception:
             for slot_tag in reversed(started_slots):
                 self.stop_slot(slot_tag)
@@ -3003,6 +3051,7 @@ class XrayManager:
         candidate: Candidate,
         reason: str,
         *,
+        source: str = 'internal',
         force_reload: bool = False,
         preempt_draining: bool = False,
         emergency_failover: bool = False,
@@ -3147,6 +3196,7 @@ class XrayManager:
                 old_slot.drain_last_info_connections = None
                 self.state['last_switch_at'] = switched_at
                 self.state['last_switch_reason'] = reason
+                self.state['last_switch_source'] = source
                 self.state['auto_check_failures'] = 0
                 self.state['auto_check_last_error'] = ''
                 self.latencies[candidate.id] = {
@@ -3163,7 +3213,7 @@ class XrayManager:
                 log(f'could not save last-good active config: {exc}', error=True)
             log(
                 f'active outbound: {candidate.name} [{candidate.outbound_tag}] via {standby_tag}; '
-                f'{old_slot_tag} is draining'
+                f'{old_slot_tag} is draining; source={source}'
             )
             if self.slots[old_slot_tag].draining:
                 self.capture_drain_connection_baseline(old_slot_tag)
@@ -3241,9 +3291,12 @@ class XrayManager:
         rollback_slot_tag: str,
         rollback_candidate: Candidate,
         reason: str,
+        *,
+        source: str = 'post_switch_rollback',
     ) -> bool:
         if failed_slot_tag == rollback_slot_tag:
             raise ValueError('Rollback slot must differ from the failed active slot')
+        self.log_switch_request(rollback_candidate, source, reason)
         if not self.switch_lock.acquire(blocking=False):
             raise RuntimeError('Another outbound switch is already running')
         selector_switched = False
@@ -3315,6 +3368,7 @@ class XrayManager:
                 self.switch_generation += 1
                 self.state['last_switch_at'] = switched_at
                 self.state['last_switch_reason'] = reason
+                self.state['last_switch_source'] = source
                 self.state['auto_check_failures'] = 0
                 self.state['auto_check_last_error'] = ''
                 state_committed = True
@@ -3325,7 +3379,7 @@ class XrayManager:
                 log(f'could not save last-good rollback config: {exc}', error=True)
             log(
                 f'rolled back selector to {rollback_slot_tag} ({rollback_candidate.name}); '
-                f'{failed_slot_tag} is draining',
+                f'{failed_slot_tag} is draining; source={source}',
                 error=True,
             )
             if self.slots[failed_slot_tag].draining:
@@ -3422,6 +3476,7 @@ class XrayManager:
                     rollback_slot_tag,
                     rollback_candidate,
                     'automatic rollback after post-switch validation errors',
+                    source='post_switch_rollback',
                 )
             except Exception as exc:
                 log(f'automatic rollback failed: {exc}', error=True)
@@ -3432,6 +3487,7 @@ class XrayManager:
         candidate: Candidate,
         reason: str,
         *,
+        source: str = 'internal',
         force_reload: bool = False,
     ) -> None:
         """Restart xray-a in place and intentionally drop all existing flows."""
@@ -3501,6 +3557,7 @@ class XrayManager:
                 slot.draining = False
                 self.state['last_switch_at'] = switched_at
                 self.state['last_switch_reason'] = reason
+                self.state['last_switch_source'] = source
                 self.state['auto_check_failures'] = 0
                 self.state['auto_check_last_error'] = ''
                 self.latencies[candidate.id] = {
@@ -3516,7 +3573,7 @@ class XrayManager:
                 f'active outbound: {candidate.name} [{candidate.outbound_tag}] via {slot_tag}; '
                 f'single-slot validation: '
                 + self.format_probe_results(checks)
-                + f'; fastest={measured_latency:.0f}ms'
+                + f'; fastest={measured_latency:.0f}ms; source={source}'
             )
         except Exception:
             if prepared_config is not None:
@@ -3560,25 +3617,29 @@ class XrayManager:
         candidate: Candidate,
         reason: str,
         *,
+        source: str = 'internal',
         force_reload: bool = False,
         preempt_draining: bool = False,
         emergency_failover: bool = False,
     ) -> None:
+        self.log_switch_request(candidate, source, reason)
         with self.lock:
             active_running = self.slots[self.active_slot_tag].running()
         if not active_running:
-            self.start_initial_candidate(candidate, reason)
+            self.start_initial_candidate(candidate, reason, source=source)
             return
         if not self.dual_slot_enabled:
             self.switch_candidate_single_slot(
                 candidate,
                 reason,
+                source=source,
                 force_reload=force_reload,
             )
             return
         self.switch_candidate_blue_green(
             candidate,
             reason,
+            source=source,
             force_reload=force_reload,
             preempt_draining=preempt_draining,
             emergency_failover=emergency_failover,
@@ -3922,6 +3983,7 @@ class XrayManager:
                 self.restart_xray_for(
                     selected,
                     'initial start' if initial else 'start after subscription refresh',
+                    source='startup_subscription' if initial else 'subscription_refresh',
                 )
             else:
                 with self.lock:
@@ -4381,6 +4443,7 @@ class XrayManager:
                         self.restart_xray_for(
                             best_candidate,
                             f'automatic best latency after {source} check: {best_latency} ms',
+                            source=self.switch_source_for_latency_job(source),
                         )
                         final_message = f'Проверка завершена · выбран {best_candidate.name} ({best_latency} мс)'
                         log(
@@ -4782,6 +4845,7 @@ class XrayManager:
                 self.restart_xray_for(
                     candidate,
                     f'emergency failover after {failures} consecutive degraded checks',
+                    source='auto_check_failover',
                     preempt_draining=True,
                     emergency_failover=True,
                 )
@@ -4819,6 +4883,16 @@ class XrayManager:
         if not self.switch_lock.acquire(blocking=False):
             return False
         try:
+            rollback_candidate = (
+                rollback_slot.candidate
+                or self.candidate_by_id(rollback_slot.candidate_id)
+            )
+            if rollback_candidate is not None:
+                self.log_switch_request(
+                    rollback_candidate,
+                    'active_process_exit',
+                    'automatic rollback after active Xray process exit',
+                )
             self.switch_selector(rollback_slot_tag)
             with self.lock:
                 failed_slot = self.slots[failed_slot_tag]
@@ -4833,13 +4907,10 @@ class XrayManager:
                 self.switch_generation += 1
                 self.state['last_switch_at'] = now_ts()
                 self.state['last_switch_reason'] = 'automatic rollback after active Xray process exit'
+                self.state['last_switch_source'] = 'active_process_exit'
                 self.state['auto_check_failures'] = 0
                 self.state['auto_check_last_error'] = ''
                 self.save_state()
-            rollback_candidate = (
-                rollback_slot.candidate
-                or self.candidate_by_id(rollback_slot.candidate_id)
-            )
             if rollback_candidate:
                 try:
                     self.save_active_config(rollback_slot_tag, rollback_candidate)
@@ -4847,7 +4918,7 @@ class XrayManager:
                     log(f'could not save last-good rollback config: {exc}', error=True)
             log(
                 f'active slot {failed_slot_tag} exited; selector rolled back to '
-                f'{rollback_slot_tag} ({rollback_slot.candidate_name})',
+                f'{rollback_slot_tag} ({rollback_slot.candidate_name}); source=active_process_exit',
                 error=True,
             )
             return True
@@ -5101,6 +5172,7 @@ class XrayManager:
                     'last_error': self.state.get('auto_check_last_error') or '',
                     'last_switch_at': self.state.get('last_switch_at'),
                     'last_switch_reason': self.state.get('last_switch_reason') or '',
+                    'last_switch_source': self.state.get('last_switch_source') or '',
                 },
                 'ui_settings': {
                     'port': getattr(self, 'ui_port', DEFAULT_UI_PORT),
@@ -5159,6 +5231,7 @@ class XrayManager:
         self.restart_xray_for(
             candidate,
             'manual selection from UI',
+            source='manual_ui',
             preempt_draining=True,
         )
 
@@ -5174,14 +5247,27 @@ class XrayManager:
             if cached and self.candidates:
                 candidate = self.choose_initial_candidate()
                 try:
-                    self.restart_xray_for(candidate, 'cached subscription fallback')
+                    self.restart_xray_for(
+                        candidate,
+                        'cached subscription fallback',
+                        source='cached_subscription_fallback',
+                    )
                 except Exception as cached_error:
                     log(f'cached subscription could not be applied: {cached_error}', error=True)
                     restored, restored_candidate = self.restore_last_good()
                     if not restored:
                         raise
                     if restored_candidate:
-                        self.start_initial_candidate(restored_candidate, 'last-good recovery')
+                        self.log_switch_request(
+                            restored_candidate,
+                            'last_good_recovery',
+                            'last-good recovery',
+                        )
+                        self.start_initial_candidate(
+                            restored_candidate,
+                            'last-good recovery',
+                            source='last_good_recovery',
+                        )
                     else:
                         self.active_candidate_id = ''
                         self.save_state()
@@ -5191,7 +5277,16 @@ class XrayManager:
                 if not restored:
                     raise
                 if restored_candidate:
-                    self.start_initial_candidate(restored_candidate, 'last-good recovery')
+                    self.log_switch_request(
+                        restored_candidate,
+                        'last_good_recovery',
+                        'last-good recovery',
+                    )
+                    self.start_initial_candidate(
+                        restored_candidate,
+                        'last-good recovery',
+                        source='last_good_recovery',
+                    )
                 else:
                     self.active_candidate_id = ''
                     self.save_state()

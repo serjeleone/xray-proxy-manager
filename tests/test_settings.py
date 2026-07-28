@@ -243,18 +243,18 @@ def test_set_slot_mode_noop_success_and_rollback(m, manager_factory, candidate_f
     stopped = []
     started = []
     instance.stop_xray = lambda: stopped.append(instance.dual_slot_enabled)
-    instance.start_initial_candidate = lambda item, reason: started.append((item.id, reason, instance.dual_slot_enabled))
+    instance.start_initial_candidate = lambda item, reason, *, source="internal": started.append((item.id, reason, source, instance.dual_slot_enabled))
     result = instance.set_slot_mode(False)
     assert result["changed"] is True
     assert instance.dual_slot_enabled is False
     assert stopped == [True]
-    assert started[0][0] == candidate.id
+    assert started[0][:3] == (candidate.id, "slot mode changed from UI", "slot_mode_ui")
     assert json.loads(isolated_paths.RUNTIME_OPTIONS_PATH.read_text())["dual_slot_enabled"] is False
 
     instance.dual_slot_enabled = True
     instance.active_slot_tag = "xray-a"
     calls = 0
-    def failing_start(item, reason):
+    def failing_start(item, reason, *, source="internal"):
         nonlocal calls
         calls += 1
         if calls == 1:

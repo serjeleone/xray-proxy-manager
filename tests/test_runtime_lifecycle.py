@@ -386,11 +386,12 @@ def test_post_switch_watch_rolls_back_after_two_failures(
     instance.stop_event = WaitSequence(False, False)
     instance.probe_slot_health = lambda _tag: (False, None, [], "probe failed")
     rollbacks: list[tuple] = []
-    instance.rollback_to_running_slot = lambda *args: rollbacks.append(args) or True
+    instance.rollback_to_running_slot = lambda *args, **kwargs: rollbacks.append((args, kwargs)) or True
 
     instance.post_switch_watch(3, "xray-b", "xray-a", rollback)
     assert len(rollbacks) == 1
-    assert rollbacks[0][:4] == (3, "xray-b", "xray-a", rollback)
+    assert rollbacks[0][0][:4] == (3, "xray-b", "xray-a", rollback)
+    assert rollbacks[0][1] == {"source": "post_switch_rollback"}
 
 
 def test_post_switch_watch_force_stops_degraded_rollback_after_recovery(

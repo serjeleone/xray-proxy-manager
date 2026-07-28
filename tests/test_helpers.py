@@ -81,7 +81,7 @@ def test_log_normalization_buffer_and_release_notes(m, isolated_paths):
     m.append_ui_log("second")
     assert m.ui_log_snapshot(1) == (["second"], 2)
     payload = m.release_notes_payload()
-    assert payload == {"version": "v0.7.4", "items": ["Change one", "Change two"]}
+    assert payload == {"version": "v0.7.5", "items": ["Change one", "Change two"]}
     payload["items"].append("mutated")
     assert m.release_notes_payload()["items"] == ["Change one", "Change two"]
 

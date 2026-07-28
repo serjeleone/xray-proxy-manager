@@ -18,6 +18,7 @@
   --bad: #e31b23;
   --bad-hover: #f22b34;
   --shadow: 0 18px 50px rgba(0, 0, 0, .42);
+  --button-row-gap: 10px;
 }
 
 * { box-sizing: border-box; }
@@ -151,7 +152,7 @@ h1 { margin: 5px 0 0; font-size: clamp(1.45rem, 4vw, 2.15rem); letter-spacing: -
 .hero-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--button-row-gap);
   margin-top: auto;
   padding-top: 12px;
   padding-bottom: 1px;
@@ -187,6 +188,13 @@ button:hover:not(:disabled)::after { opacity: 1; }
 .button.primary:hover:not(:disabled) { background: var(--spotify-hover); }
 .button.secondary { background: #343434; border: 1px solid rgba(255,255,255,.08); }
 .button.secondary:hover:not(:disabled) { background: #414141; }
+#slotModeButton {
+  color: #251602;
+  background: var(--amber);
+  border-color: rgba(255,255,255,.12);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.04), 0 8px 24px rgba(245,166,35,.18);
+}
+#slotModeButton:hover:not(:disabled) { background: var(--amber-hover); }
 .button.secondary.subscription-error {
   color: #251602;
   background: var(--amber);
@@ -225,7 +233,7 @@ button:hover:not(:disabled)::after { opacity: 1; }
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 12px;
+  gap: var(--button-row-gap);
 }
 .subscription-actions .button { flex: 0 0 auto; align-self: center; }
 .button.compact.secondary.subscription-error {
@@ -545,7 +553,7 @@ body.modal-open { overflow: hidden; }
   .hero-primary-row { min-height: 68px; }
   .hero-primary-row h2 { max-height: 2.2em; font-size: 1.48rem; line-height: 1.08; }
   .hero-details { gap: 3px; }
-  .hero-actions { gap: 8px; margin-top: auto; padding-top: 15px; }
+  .hero-actions { gap: var(--button-row-gap); margin-top: auto; padding-top: 15px; }
   .hero-actions .button { min-height: 40px; padding: 0 13px; font-size: .82rem; }
   .settings-card { padding: 16px; }
   .subscription-fields { grid-template-columns: minmax(0, 1fr) 108px; gap: 9px; }
@@ -604,7 +612,7 @@ body.modal-open { overflow: hidden; }
   .mini-button { font-size: .78rem; }
   .hero-actions {
     flex-wrap: nowrap;
-    gap: 6px;
+    gap: var(--button-row-gap);
   }
   .hero-actions .button {
     min-width: 0;
@@ -615,7 +623,12 @@ body.modal-open { overflow: hidden; }
     white-space: nowrap;
   }
   .hero-actions .button:not(.hero-stop) { flex: 1 1 0; }
-  .hero-actions .hero-stop { flex: 0 0 auto; margin-left: 0; }
+  .hero-actions .hero-stop {
+    flex: 0 0 auto;
+    margin-left: 0;
+    padding-left: 13px;
+    padding-right: 13px;
+  }
 }
 
 /* Active slot header, external rule control and drain actions. */
@@ -780,12 +793,12 @@ body.modal-open { overflow: hidden; }
 /* Text controls inherit the desktop centering model on mobile. */
 @media (max-width: 760px) {
   .subscription-actions {
-    gap: 10px;
+    gap: var(--button-row-gap);
   }
 }
 
 @media (max-width: 470px) {
   .subscription-actions {
-    gap: 9px;
+    gap: var(--button-row-gap);
   }
 }
