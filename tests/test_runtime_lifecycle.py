@@ -414,3 +414,32 @@ def test_post_switch_watch_force_stops_degraded_rollback_after_recovery(
         3, "xray-b", "xray-a", rollback, force_disconnect_rollback=True,
     )
     assert stopped == ["xray-a"]
+
+
+def test_adaptive_drain_closes_stalled_connections_and_hard_stops(manager_factory, monkeypatch):
+    instance = manager_factory()
+    instance.switching_preset = "adaptive"
+    instance.drain_poll_interval_seconds = 2
+    instance.drain_quiet_seconds = 999
+    slot = instance.slots["xray-a"]
+    slot.draining = True
+    slot.drain_started_at = 60
+    slot.drain_protect_until = 0
+    slot.drain_known_connection_ids = {"old"}
+    slot.drain_connection_bytes = {"old": 10}
+    slot.drain_idle_polls = {"old": 2}
+    slot.drain_bytes = 10
+    connection = {"id": "old", "chains": ["xray-a"], "metadata": {"network": "tcp"}, "upload": 10, "download": 0}
+    instance.stop_event = WaitSequence(False, True)
+    instance.selector_connections = lambda: [connection]
+    instance.local_tcp_connection_count = lambda _port: 1
+    monkeypatch.setattr("xray_proxy_manager_test_module.now_ts", lambda: 100)
+    closed = []
+    instance.close_slot_selector_connections = lambda tag, ids, reason: closed.append((tag, ids, reason)) or (1, 0)
+    stopped = []
+    instance.stop_slot = stopped.append
+
+    instance.drain_monitor_loop()
+
+    assert closed == [("xray-a", {"old"}, "adaptive switching preset")]
+    assert stopped == ["xray-a"]

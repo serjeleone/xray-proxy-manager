@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=18">
+  <link rel="stylesheet" href="style.css?ui=28">
 </head>
 <body>
   <main class="shell">
@@ -146,7 +146,7 @@
           </label>
         </div>
 
-        <div class="option-row">
+        <div class="option-row auto-switch-option-row">
           <div>
             <strong>Автопереключение на лучший сервер</strong>
             <small>После завершения проверки</small>
@@ -155,6 +155,14 @@
             <input id="autoSwitchBestEnabled" type="checkbox">
             <span class="switch-track"></span>
           </label>
+        </div>
+        <div class="option-row switching-preset-option-row">
+          <label class="switch-preset-title" for="switchingPreset">Пресет переключения:</label>
+          <select id="switchingPreset">
+            <option value="smooth">Плавное переключение</option>
+            <option value="adaptive">Адаптивное переключение</option>
+            <option value="forced">Принудительное переключение</option>
+          </select>
         </div>
         <small id="autoCheckerMeta" class="card-status">—</small>
         <button id="saveAutoChecker" class="button compact" type="button">Сохранить</button>
@@ -278,6 +286,6 @@
     </div>
   </div>
 
-  <script src="app.js?ui=15"></script>
+  <script src="app.js?ui=18"></script>
 </body>
 </html>

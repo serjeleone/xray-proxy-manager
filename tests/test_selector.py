@@ -178,3 +178,30 @@ def test_selector_wait_and_loop(m, manager_factory):
     instance.refresh_selector_status = lambda: calls.append(True)
     instance.selector_status_loop()
     assert calls == [True]
+
+
+def test_close_slot_selector_connections_uses_delete(m, manager_factory):
+    instance = manager_factory()
+    calls = []
+    instance.selector_api_request = lambda *args, **kwargs: calls.append((args, kwargs)) or {}
+    instance.selector_connections = lambda: [
+        {"id": "one", "chains": ["xray-a"]},
+        {"id": "two", "chains": ["xray-b"]},
+    ]
+    closed, failed = instance.close_slot_selector_connections(
+        "xray-a", reason="test preset"
+    )
+    assert (closed, failed) == (1, 0)
+    assert calls == [(('DELETE', '/connections/one'), {'timeout': 10})]
+
+
+def test_forced_preset_closes_baseline_connections(manager_factory):
+    instance = manager_factory()
+    instance.switching_preset = "forced"
+    slot = instance.slots["xray-a"]
+    slot.draining = True
+    slot.drain_known_connection_ids = {"a", "b"}
+    calls = []
+    instance.close_slot_selector_connections = lambda tag, ids, reason: calls.append((tag, ids, reason)) or (2, 0)
+    instance.apply_switching_preset_to_draining_slot("xray-a")
+    assert calls == [("xray-a", {"a", "b"}, "forced switching preset")]

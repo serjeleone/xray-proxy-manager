@@ -221,6 +221,7 @@ function autoCheckerFormValues() {
   return {
     auto_checker_enabled: $('autoCheckerEnabled').checked,
     auto_switch_best_enabled: $('autoSwitchBestEnabled').checked,
+    switching_preset: $('switchingPreset').value,
     auto_check_interval_seconds: Number.parseInt($('autoCheckInterval').value, 10),
     auto_check_failures: Number.parseInt($('autoCheckFailures').value, 10),
     auto_check_max_latency_ms: Number.parseInt($('autoCheckMaxLatency').value, 10),
@@ -475,12 +476,12 @@ function renderTraffic(payload) {
   if (router.rule_enabled) {
     button.classList.add('enabled');
     button.title = `Отключить правило ${ruleName}`;
-    hint.textContent = `Правило ${ruleName} включено · Нажмите кнопку выше, чтобы приостановить.`;
+    hint.textContent = `Правило ${ruleName} включено · Для приостановки нажмите кнопку выше.`;
   } else {
     button.classList.add('paused');
     button.title = `Включить правило ${ruleName}`;
     $('statusDot').className = 'status-dot warn';
-    hint.textContent = `Правило ${ruleName} приостановлено · Нажмите кнопку выше, чтобы возобновить.`;
+    hint.textContent = `Правило ${ruleName} приостановлено · Для возобновления нажмите кнопку выше.`;
     hint.classList.add('warn');
   }
 }
@@ -527,6 +528,7 @@ function initializeSettings(payload) {
   const ui = payload.ui_settings || {};
   $('autoCheckerEnabled').checked = Boolean(checker.enabled);
   $('autoSwitchBestEnabled').checked = Boolean(checker.switch_to_best);
+  $('switchingPreset').value = checker.switching_preset || 'smooth';
   $('autoCheckInterval').value = checker.interval_seconds ?? 60;
   $('autoCheckFailures').value = checker.failure_threshold ?? 3;
   $('autoCheckMaxLatency').value = checker.max_latency_ms ?? 500;
@@ -594,8 +596,10 @@ function render(payload) {
   const slotLastCheck = formatRelative(checker.last_check_at);
   const fullLastCheck = formatRelative(checker.last_best_check_at);
   const lastChecks = `Последняя проверка: ${slotLastCheck}/${fullLastCheck}`;
+  const presetLabels = { smooth: 'плавное', adaptive: 'адаптивное', forced: 'принудительное' };
+  const presetLabel = presetLabels[checker.switching_preset] || presetLabels.smooth;
   const bestMode = checker.switch_to_best
-    ? ` · автопереключение включено · разница от ${checker.min_ping_delta_ms} мс · предпочитаемая страна: ${checker.preferred_country || 'нет'} · предпочитаемый протокол: ${checker.preferred_protocol || 'нет'} · исключения: ${checker.excluded || 'нет'}`
+    ? ` · автопереключение включено · пресет: ${presetLabel} · разница от ${checker.min_ping_delta_ms} мс · предпочитаемая страна: ${checker.preferred_country || 'нет'} · предпочитаемый протокол: ${checker.preferred_protocol || 'нет'} · исключения: ${checker.excluded || 'нет'}`
     : ' · автопереключение выключено';
   const checkerMode = checker.enabled ? '' : ' · авто-чекер выключен';
   const lastError = checker.last_error ? ` · последняя ошибка: ${checker.last_error}` : '';
@@ -905,6 +909,7 @@ function statusRefreshPaused() {
   return state.logsOpen
     || $('autoSwitchPreferredCountry').matches(':focus')
     || $('autoSwitchPreferredProtocol').matches(':focus')
+    || $('switchingPreset').matches(':focus')
     || $('protocolFilter').matches(':focus');
 }
 
@@ -1201,8 +1206,8 @@ $('copyRouterKey').addEventListener('click', async () => {
 });
 $('saveAutoChecker').addEventListener('click', saveAutoChecker);
 $('saveSubscription').addEventListener('click', saveSubscriptionSettings);
-['autoCheckerEnabled', 'autoSwitchBestEnabled', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
-  $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled'].includes(id) ? 'change' : 'input', updateSaveButtons);
+['autoCheckerEnabled', 'autoSwitchBestEnabled', 'switchingPreset', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
+  $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled', 'switchingPreset'].includes(id) ? 'change' : 'input', updateSaveButtons);
 });
 $('autoSwitchPreferredCountry').addEventListener('change', () => {
   state.preferredCountryDraft = $('autoSwitchPreferredCountry').value;
@@ -1216,6 +1221,9 @@ $('autoSwitchPreferredProtocol').addEventListener('change', () => {
   updateSaveButtons();
 });
 $('autoSwitchPreferredProtocol').addEventListener('blur', () => {
+  if (state.statusRefreshDeferred) fetchStatus(true);
+});
+$('switchingPreset').addEventListener('blur', () => {
   if (state.statusRefreshDeferred) fetchStatus(true);
 });
 ['subscriptionUrl', 'subscriptionInterval'].forEach((id) => $(id).addEventListener('input', updateSaveButtons));

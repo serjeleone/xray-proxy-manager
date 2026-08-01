@@ -54,7 +54,11 @@ WATCHDOG_PORT = 18099
 SLOT_TAGS = ('xray-a', 'xray-b')
 DEFAULT_SOCKS_TCP_B = 10809
 POST_SWITCH_WATCH_SECONDS = 30
-ADDON_VERSION = '0.7.5'
+ADAPTIVE_DRAIN_GRACE_SECONDS = 5
+ADAPTIVE_DRAIN_IDLE_POLLS = 3
+ADAPTIVE_DRAIN_HARD_TIMEOUT_SECONDS = 30
+SWITCHING_PRESETS = {'smooth', 'adaptive', 'forced'}
+ADDON_VERSION = '0.8.0'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_TEST_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -72,6 +76,7 @@ RUNTIME_SETTING_KEYS = {
     'dual_slot_enabled',
     'auto_checker_enabled',
     'auto_switch_best_enabled',
+    'switching_preset',
     'auto_switch_preferred_country',
     'auto_switch_preferred_protocol',
     'auto_switch_excluded',
@@ -264,6 +269,13 @@ def normalize_preferred_country(value: Any) -> str:
     if not re.fullmatch(r'[A-Z]{2}', text) or text not in ISO_COUNTRY_CODES:
         raise ValueError(f'Неизвестный код предпочитаемой страны: {text}')
     return text
+
+
+def normalize_switching_preset(value: Any) -> str:
+    preset = str(value or 'smooth').strip().lower()
+    if preset not in SWITCHING_PRESETS:
+        raise ValueError('switching_preset must be smooth, adaptive or forced')
+    return preset
 
 
 def normalize_preferred_protocol(value: Any) -> str:
@@ -740,6 +752,7 @@ class XrayManager:
 
         self.auto_checker_enabled = True
         self.auto_switch_best_enabled = True
+        self.switching_preset = 'smooth'
         self.auto_switch_preferred_country = ''
         self.auto_switch_preferred_protocol = ''
         self.auto_switch_excluded = 'RU'
@@ -880,6 +893,7 @@ class XrayManager:
         self.dual_slot_enabled = to_bool(source.get('dual_slot_enabled', True))
         self.auto_checker_enabled = to_bool(source.get('auto_checker_enabled', True))
         self.auto_switch_best_enabled = to_bool(source.get('auto_switch_best_enabled', True))
+        self.switching_preset = normalize_switching_preset(source.get('switching_preset', 'smooth'))
         self.auto_switch_preferred_country = normalize_preferred_country(
             source.get('auto_switch_preferred_country', '')
         )
@@ -934,6 +948,8 @@ class XrayManager:
                 'ui_hide_unavailable', 'ui_hide_excluded',
             }:
                 normalized[key] = to_bool(value)
+            elif key == 'switching_preset':
+                normalized[key] = normalize_switching_preset(value)
             elif key == 'auto_switch_preferred_country':
                 normalized[key] = normalize_preferred_country(value)
             elif key == 'auto_switch_preferred_protocol':
@@ -1394,7 +1410,7 @@ class XrayManager:
         if not self.selector_control_enabled:
             raise RuntimeError('Управление внешним selector отключено в настройках')
         method = method.upper()
-        if method not in {'GET', 'PUT'}:
+        if method not in {'GET', 'PUT', 'DELETE'}:
             raise ValueError('Unsupported selector API method')
         if not path.startswith('/'):
             path = f'/{path}'
@@ -1463,6 +1479,76 @@ class XrayManager:
                 'error': '',
                 'last_checked_at': now_ts(),
             })
+
+    def close_selector_connection(self, connection_id: str) -> None:
+        connection_id = str(connection_id or '').strip()
+        if not connection_id:
+            raise ValueError('Connection id is empty')
+        self.selector_api_request(
+            'DELETE',
+            f'/connections/{quote(connection_id, safe="")}',
+            timeout=10,
+        )
+
+    def close_slot_selector_connections(
+        self,
+        slot_tag: str,
+        connection_ids: set[str] | None = None,
+        *,
+        reason: str,
+    ) -> tuple[int, int]:
+        if slot_tag not in SLOT_TAGS:
+            raise ValueError('Unknown Xray slot')
+        if connection_ids is None:
+            connections = self.connections_for_slot(self.selector_connections(), slot_tag)
+            connection_ids = {
+                self.connection_id(item) for item in connections if self.connection_id(item)
+            }
+        closed = 0
+        failed = 0
+        for connection_id in sorted(connection_ids):
+            try:
+                self.close_selector_connection(connection_id)
+                closed += 1
+            except RuntimeError as exc:
+                # The connection may disappear between GET /connections and DELETE.
+                # A 404 therefore means the desired final state is already reached.
+                if 'HTTP 404' in str(exc):
+                    closed += 1
+                    continue
+                failed += 1
+                log(
+                    f'could not close {slot_tag} selector connection {connection_id} '
+                    f'({reason}): {exc}',
+                    error=True,
+                )
+        if connection_ids:
+            log(
+                f'{slot_tag} {reason}: closed {closed}/{len(connection_ids)} selector '
+                f'connection(s)' + (f'; failures={failed}' if failed else '')
+            )
+        return closed, failed
+
+    def apply_switching_preset_to_draining_slot(self, slot_tag: str) -> None:
+        if self.switching_preset != 'forced':
+            return
+        with self.lock:
+            slot = self.slots[slot_tag]
+            if not slot.draining:
+                return
+            connection_ids = set(slot.drain_known_connection_ids)
+        try:
+            self.close_slot_selector_connections(
+                slot_tag,
+                connection_ids,
+                reason='forced switching preset',
+            )
+        except Exception as exc:
+            log(
+                f'{slot_tag} forced switching preset could not close old selector '
+                f'connections: {exc}',
+                error=True,
+            )
 
     def selector_connections(self) -> list[dict[str, Any]]:
         payload = self.selector_api_request('GET', '/connections', timeout=15)
@@ -3217,6 +3303,7 @@ class XrayManager:
             )
             if self.slots[old_slot_tag].draining:
                 self.capture_drain_connection_baseline(old_slot_tag)
+                self.apply_switching_preset_to_draining_slot(old_slot_tag)
             if rollback_candidate is not None:
                 threading.Thread(
                     target=self.post_switch_watch,
@@ -3384,6 +3471,7 @@ class XrayManager:
             )
             if self.slots[failed_slot_tag].draining:
                 self.capture_drain_connection_baseline(failed_slot_tag)
+                self.apply_switching_preset_to_draining_slot(failed_slot_tag)
             return True
         except Exception as exc:
             if state_committed:
@@ -3749,9 +3837,34 @@ class XrayManager:
                     if polls * self.drain_poll_interval_seconds >= 10
                 }
 
+                current_time = now_ts()
+                drain_started_at = int(slot.drain_started_at or current_time)
+                drain_elapsed = max(0, current_time - drain_started_at)
+                preset_close_ids: set[str] = set()
+                preset_close_reason = ''
+                if self.switching_preset == 'forced':
+                    # The first close attempt happens immediately after the selector
+                    # switch. Repeating it here handles races and temporary API errors.
+                    preset_close_ids = set(current_ids)
+                    preset_close_reason = 'forced switching preset'
+                elif (
+                    self.switching_preset == 'adaptive'
+                    and drain_elapsed >= ADAPTIVE_DRAIN_GRACE_SECONDS
+                ):
+                    preset_close_ids = {
+                        connection_id for connection_id, polls in idle_polls.items()
+                        if polls >= ADAPTIVE_DRAIN_IDLE_POLLS
+                    }
+                    preset_close_reason = 'adaptive switching preset'
+                if preset_close_ids:
+                    self.close_slot_selector_connections(
+                        slot_tag,
+                        preset_close_ids,
+                        reason=preset_close_reason,
+                    )
+
                 stop_now = False
                 info_due = False
-                current_time = now_ts()
                 with self.lock:
                     previous_bytes = slot.drain_bytes
                     slot.drain_connections = total_connections
@@ -3763,12 +3876,18 @@ class XrayManager:
                     slot.drain_idle_polls = idle_polls
                     slot.drain_stalled_connections = len(stalled_ids)
                     slot.drain_known_connection_ids.update(current_ids)
-                    timeout_reached = bool(
+                    configured_timeout_reached = bool(
                         self.drain_timeout_minutes > 0
                         and slot.drain_started_at
                         and current_time - slot.drain_started_at >= self.drain_timeout_minutes * 60
                     )
-                    if timeout_reached:
+                    adaptive_timeout_reached = bool(
+                        self.switching_preset == 'adaptive'
+                        and slot.drain_started_at
+                        and current_time - slot.drain_started_at
+                        >= ADAPTIVE_DRAIN_HARD_TIMEOUT_SECONDS
+                    )
+                    if configured_timeout_reached or adaptive_timeout_reached:
                         stop_now = True
                     elif total_connections == 0 and total_bytes == previous_bytes:
                         if slot.drain_zero_since is None:
@@ -3805,9 +3924,25 @@ class XrayManager:
                         )
 
                 if stop_now:
-                    if self.drain_timeout_minutes > 0 and slot.drain_started_at and (
-                        now_ts() - slot.drain_started_at >= self.drain_timeout_minutes * 60
-                    ):
+                    adaptive_deadline = bool(
+                        self.switching_preset == 'adaptive'
+                        and slot.drain_started_at
+                        and now_ts() - slot.drain_started_at
+                        >= ADAPTIVE_DRAIN_HARD_TIMEOUT_SECONDS
+                    )
+                    configured_deadline = bool(
+                        self.drain_timeout_minutes > 0
+                        and slot.drain_started_at
+                        and now_ts() - slot.drain_started_at >= self.drain_timeout_minutes * 60
+                    )
+                    if adaptive_deadline:
+                        log(
+                            f'{slot_tag} adaptive drain deadline of '
+                            f'{ADAPTIVE_DRAIN_HARD_TIMEOUT_SECONDS}s reached; forcing slot stop '
+                            f'with {slot.drain_connections} tracked connections',
+                            error=True,
+                        )
+                    elif configured_deadline:
                         log(
                             f'{slot_tag} drain timeout of {self.drain_timeout_minutes} min reached; '
                             f'forcing slot stop with {slot.drain_connections} tracked connections',
@@ -5158,6 +5293,7 @@ class XrayManager:
                 'auto_checker': {
                     'enabled': self.auto_checker_enabled,
                     'switch_to_best': self.auto_switch_best_enabled,
+                    'switching_preset': self.switching_preset,
                     'preferred_country': getattr(self, 'auto_switch_preferred_country', ''),
                     'preferred_protocol': getattr(self, 'auto_switch_preferred_protocol', ''),
                     'excluded': self.auto_switch_excluded,
@@ -5191,6 +5327,7 @@ class XrayManager:
                     'selector_tag': self.selector_tag,
                     'drain_quiet_seconds': self.drain_quiet_seconds,
                     'drain_timeout_minutes': self.drain_timeout_minutes,
+                    'switching_preset': self.switching_preset,
                     'slots': slots_payload,
                 },
                 'primary_test_url': self.primary_test_url,

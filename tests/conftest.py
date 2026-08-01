@@ -141,6 +141,7 @@ def manager_factory(m, candidate_factory, tmp_path):
         instance.router_status_interval_seconds = 10
         instance.auto_checker_enabled = True
         instance.auto_switch_best_enabled = True
+        instance.switching_preset = "smooth"
         instance.auto_switch_preferred_country = ""
         instance.auto_switch_preferred_protocol = ""
         instance.auto_switch_excluded = "RU"
@@ -232,7 +233,7 @@ def isolated_paths(m, monkeypatch, tmp_path):
     (web / "style.css").write_text("style", encoding="utf-8")
     (web / "favicon.svg").write_text("svg", encoding="utf-8")
     changelog = tmp_path / "CHANGELOG.md"
-    changelog.write_text("## v0.7.5\n\n- Change one\n- Change two\n", encoding="utf-8")
+    changelog.write_text("## v0.8.0\n\n- Change one\n- Change two\n", encoding="utf-8")
 
     paths = {
         "OPTIONS_PATH": data / "options.json",

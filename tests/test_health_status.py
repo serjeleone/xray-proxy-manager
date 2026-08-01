@@ -263,7 +263,7 @@ def test_effective_active_candidate_and_status_payload_keep_running_removed_outb
     assert active_card["slot_tags"] == ["xray-a"]
     assert any(item["id"] == current.id for item in payload["candidates"])
     assert payload["blue_green"]["active_slot"] == "xray-a"
-    assert payload["release_notes"]["version"] == "v0.7.5"
+    assert payload["release_notes"]["version"] == "v0.8.0"
     assert payload["auto_checker"]["last_switch_source"] == "manual_ui"
 
 

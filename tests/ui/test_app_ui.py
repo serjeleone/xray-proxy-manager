@@ -63,8 +63,8 @@ def base_payload() -> dict:
         ),
     ]
     return {
-        "version": "0.7.5",
-        "xray_version": "Xray 26.7.11",
+        "version": "0.8.0",
+        "xray_version": "Xray 26.7.28",
         "xray_running": True,
         "home_assistant_host": "192.0.2.250",
         "active": {
@@ -97,7 +97,7 @@ def base_payload() -> dict:
             "rule_name": "mark_domains", "rule_section": "mark_domains", "busy": False,
         },
         "auto_checker": {
-            "enabled": True, "switch_to_best": True,
+            "enabled": True, "switch_to_best": True, "switching_preset": "smooth",
             "interval_seconds": 60, "best_check_interval_seconds": 600,
             "failure_threshold": 3, "current_failures": 0, "max_latency_ms": 500,
             "preferred_country": "FI", "preferred_protocol": "VLESS",
@@ -119,7 +119,7 @@ def base_payload() -> dict:
             "refresh": {"running": False, "message": ""},
             "switch": {"running": False, "message": ""},
         },
-        "release_notes": {"version": "0.7.5", "items": ["Тестовая версия"]},
+        "release_notes": {"version": "0.8.0", "items": ["Тестовая версия"]},
     }
 
 
@@ -175,7 +175,7 @@ def open_app(page: Page, web_app_html: str, payload: dict | None = None) -> ApiH
     harness = ApiHarness(copy.deepcopy(payload or base_payload()))
     page.route("**/api/**", harness.handler)
     page.set_content(web_app_html, wait_until="networkidle")
-    expect(page.locator("#versionBadge")).to_have_text("v0.7.5")
+    expect(page.locator("#versionBadge")).to_have_text("v0.8.0")
     return harness
 
 
@@ -262,6 +262,9 @@ def test_auto_checker_save_separates_runtime_settings_and_preferences(page: Page
     harness = open_app(page, web_app_html)
 
     page.locator("#autoCheckFailures").fill("5")
+    page.locator("#switchingPreset").select_option("adaptive")
+    assert harness.requests == []
+    assert page.locator("#saveAutoChecker").evaluate("element => element.classList.contains('dirty')")
     page.locator("#autoSwitchPreferredCountry").select_option("DE")
     page.locator("#autoSwitchPreferredProtocol").select_option("TROJAN")
     page.locator("#autoSwitchExcluded").fill("ru; CN; RU")
@@ -271,6 +274,7 @@ def test_auto_checker_save_separates_runtime_settings_and_preferences(page: Page
     settings, preferences = harness.requests
     assert settings["path"] == "/api/settings"
     assert settings["body"]["changes"]["auto_check_failures"] == 5
+    assert settings["body"]["changes"]["switching_preset"] == "adaptive"
     assert settings["body"]["changes"]["auto_switch_excluded"] == "RU, CN"
     assert "auto_switch_preferred_country" not in settings["body"]["changes"]
     assert preferences == {
@@ -295,18 +299,25 @@ def test_subscription_save_shows_restart_decision_when_backend_requires_it(page:
     assert "hidden" in (page.locator("#restartModal").get_attribute("class") or "").split()
 
 
-def test_protocol_select_is_not_rebuilt_while_user_is_interacting(page: Page, web_app_html: str) -> None:
+def test_focused_selects_defer_status_refresh_and_option_rebuild(page: Page, web_app_html: str) -> None:
     harness = open_app(page, web_app_html)
-    select = page.locator("#protocolFilter")
-    select.focus()
-    before = select.evaluate("element => element.innerHTML")
+
+    preset = page.locator("#switchingPreset")
+    preset.focus()
+    harness.payload["auto_checker"]["enabled"] = False
+    page.wait_for_timeout(3200)
+    expect(page.locator("#autoCheckerState")).to_have_text("Включён")
+    preset.blur()
+    expect(page.locator("#autoCheckerState")).to_have_text("Выключен")
+
+    protocol = page.locator("#protocolFilter")
+    protocol.focus()
+    before = protocol.evaluate("element => element.innerHTML")
     harness.payload["protocols"].append("SHADOWSOCKS")
     page.wait_for_timeout(3200)
-    after = select.evaluate("element => element.innerHTML")
-    assert after == before
-
-    select.blur()
-    expect(select.locator('option[value="SHADOWSOCKS"]')).to_have_count(1)
+    assert protocol.evaluate("element => element.innerHTML") == before
+    protocol.blur()
+    expect(protocol.locator('option[value="SHADOWSOCKS"]')).to_have_count(1)
 
 
 def test_logs_modal_loads_searches_and_closes(page: Page, web_app_html: str) -> None:

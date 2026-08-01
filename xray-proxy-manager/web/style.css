@@ -34,7 +34,7 @@ body {
 }
 button, input, select { font: inherit; }
 button, label, input, select { -webkit-tap-highlight-color: transparent; }
-button { color: inherit; -webkit-appearance: none; appearance: none; padding-bottom: 0; }
+button { color: inherit; -webkit-appearance: none; appearance: none; padding-block: 0; }
 button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 2px solid var(--spotify);
   outline-offset: 2px;
@@ -177,7 +177,7 @@ button:hover:not(:disabled)::after { opacity: 1; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  line-height: 1;
+  line-height: normal;
   cursor: pointer;
   font-weight: 760;
   transition: background .14s ease, box-shadow .14s ease, opacity .14s ease, color .14s ease, filter .14s ease;
@@ -286,7 +286,9 @@ input[type="number"], input[type="text"], input[type="url"], select {
   background: #292929;
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 9px 11px;
+  padding-inline: 11px;
+  padding-block: 0;
+  line-height: normal;
 }
 input[type="number"]:hover, input[type="text"]:hover, input[type="url"]:hover, select:hover { background: #303030; }
 
@@ -800,5 +802,99 @@ body.modal-open { overflow: hidden; }
 @media (max-width: 470px) {
   .subscription-actions {
     gap: var(--button-row-gap);
+  }
+}
+
+.auto-switch-option-row {
+  align-items: center;
+}
+.switching-preset-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(230px, 320px);
+  align-items: center;
+  gap: 16px;
+  padding-top: 0;
+  border-top: 0;
+}
+.auto-switch-option-row small {
+  font-size: .72rem;
+}
+.switch-preset-title {
+  min-width: 0;
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 400;
+  line-height: normal;
+}
+.switching-preset-option-row select {
+  width: 100%;
+  min-height: 42px;
+  font-size: .72rem;
+}
+.switching-preset-option-row select option {
+  font-size: inherit;
+}
+
+@media (max-width: 470px) {
+  .switching-preset-option-row {
+    grid-template-columns: minmax(0, .9fr) minmax(155px, 1.1fr);
+    gap: 12px;
+  }
+}
+
+/* Unified text-box centering. Flexbox centers the control content geometrically;
+   text-box removes font half-leading where the browser supports it. */
+@supports (text-box: trim-both text) {
+  button,
+  input[type="number"],
+  input[type="text"],
+  input[type="url"],
+  select,
+  .ping {
+    text-box: trim-both text;
+  }
+}
+
+/* The slot letters are decorative glyphs rather than form controls. */
+@media (min-width: 761px) {
+  .slot-badge {
+    padding-bottom: 2px;
+  }
+}
+
+/* Restore the previously approved desktop alignment only for the top action row. */
+@media (min-width: 761px) {
+  .hero-actions .button {
+    padding-top: 0;
+    padding-bottom: 2px;
+    line-height: 1;
+    text-box: normal;
+  }
+}
+
+/* Mobile-only optical corrections requested for form controls and selected actions. */
+@media (max-width: 760px) {
+  input[type="number"],
+  input[type="text"],
+  input[type="url"],
+  select {
+    padding-top: 2px;
+    padding-bottom: 0;
+    text-box: normal;
+  }
+
+  #saveSubscription,
+  #saveAutoChecker,
+  #saveOnlyButton,
+  #refreshButton {
+    padding-top: 1px;
+    padding-bottom: 0;
+    text-box: normal;
+  }
+
+  .outbound-card .mini-button[data-test] {
+    padding-top: 2px;
+    padding-bottom: 0;
+    text-box: normal;
   }
 }

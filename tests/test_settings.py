@@ -66,6 +66,7 @@ def test_apply_and_validate_runtime_values(m, manager_factory):
         "dual_slot_enabled": "false",
         "auto_checker_enabled": "yes",
         "auto_switch_best_enabled": 0,
+        "switching_preset": "adaptive",
         "auto_switch_preferred_country": "fi",
         "auto_switch_preferred_protocol": "trojan",
         "auto_switch_excluded": "RU, bad node",
@@ -85,6 +86,7 @@ def test_apply_and_validate_runtime_values(m, manager_factory):
     assert instance.dual_slot_enabled is False
     assert instance.auto_checker_enabled is True
     assert instance.auto_switch_best_enabled is False
+    assert instance.switching_preset == "adaptive"
     assert instance.auto_switch_preferred_country == "FI"
     assert instance.auto_switch_preferred_protocol == "TROJAN"
     assert instance.auto_switch_excluded == "RU, bad node"
@@ -96,6 +98,7 @@ def test_apply_and_validate_runtime_values(m, manager_factory):
     valid = instance.validate_runtime_changes({
         "subscription_url": "https://valid.example/sub",
         "auto_checker_enabled": "true",
+        "switching_preset": "forced",
         "auto_switch_preferred_country": "nl",
         "auto_switch_preferred_protocol": "vless",
         "auto_switch_excluded": "RU, node text",
@@ -111,6 +114,7 @@ def test_apply_and_validate_runtime_values(m, manager_factory):
         "ui_hide_unavailable": True,
         "ui_hide_excluded": False,
     })
+    assert valid["switching_preset"] == "forced"
     assert valid["auto_switch_preferred_country"] == "NL"
     assert valid["auto_switch_preferred_protocol"] == "VLESS"
     assert valid["ui_protocol_filter"] == "all"
@@ -124,6 +128,7 @@ def test_apply_and_validate_runtime_values(m, manager_factory):
         {"ui_sort": "bad"},
         {"ui_protocol_filter": "bad protocol!"},
         {"auto_check_failures": 0},
+        {"switching_preset": "unknown"},
     ],
 )
 def test_validate_runtime_changes_rejects_invalid_input(m, manager_factory, changes):

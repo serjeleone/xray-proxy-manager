@@ -167,20 +167,23 @@ def test_ingress_proxy_handler_relays_both_directions(m, monkeypatch):
     upstream, upstream_peer = socket.socketpair()
     for sock in (client, client_peer, upstream, upstream_peer):
         sock.settimeout(2)
-    client_peer.sendall(b"request")
-    client_peer.shutdown(socket.SHUT_WR)
-    upstream_peer.sendall(b"response")
-    upstream_peer.shutdown(socket.SHUT_WR)
 
     monkeypatch.setattr(m.socket, "create_connection", lambda *_args, **_kwargs: upstream)
     handler = m.IngressTCPProxyHandler.__new__(m.IngressTCPProxyHandler)
     handler.server = SimpleNamespace(target_host="127.0.0.1", target_port=8090)
     handler.request = client
+    worker = threading.Thread(target=handler.handle)
 
     try:
-        handler.handle()
+        worker.start()
+        client_peer.sendall(b"request")
         assert upstream_peer.recv(64) == b"request"
+        upstream_peer.sendall(b"response")
+        upstream_peer.shutdown(socket.SHUT_WR)
         assert client_peer.recv(64) == b"response"
+        client_peer.shutdown(socket.SHUT_WR)
+        worker.join(timeout=2)
+        assert not worker.is_alive()
     finally:
         for sock in (client, client_peer, upstream_peer):
             try:

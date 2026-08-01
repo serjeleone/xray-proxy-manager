@@ -32,6 +32,9 @@ configuration:
   auto_checker_enabled:
     name: Automatic checks
     description: Run a background check at startup and then on schedule.
+  switching_preset:
+    name: Switching preset
+    description: Preserve old connections, adaptively close stalled sessions, or forcibly terminate all old sessions when changing slots.
   auto_switch_best_enabled:
     name: Select best outbound
     description: After a full check, switch to a sufficiently faster option.

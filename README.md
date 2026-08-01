@@ -63,6 +63,7 @@ selector_tag: "xray-active"
 auto_switch_excluded: "RU, Определенный_сервер"
 auto_switch_preferred_country: "NL"
 auto_switch_preferred_protocol: "VLESS"
+switching_preset: "smooth"
 primary_test_url: "https://www.gstatic.com/generate_204"
 secondary_test_url: "https://cp.cloudflare.com/generate_204"
 ui_port: 8090
@@ -89,4 +90,4 @@ ui_hide_excluded: true
 
 ## Версия
 
-Текущая версия приложения: `0.7.5`.
+Текущая версия приложения: `0.8.0`.
