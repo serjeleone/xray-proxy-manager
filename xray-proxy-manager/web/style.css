@@ -231,6 +231,7 @@ button:hover:not(:disabled)::after { opacity: 1; }
   width: 100%;
   margin-top: auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-start;
   gap: var(--button-row-gap);
@@ -795,7 +796,14 @@ body.modal-open { overflow: hidden; }
 /* Text controls inherit the desktop centering model on mobile. */
 @media (max-width: 760px) {
   .subscription-actions {
+    flex-direction: column;
+    align-items: stretch;
     gap: var(--button-row-gap);
+  }
+  .subscription-actions .button {
+    width: 100%;
+    flex: 0 0 auto;
+    align-self: stretch;
   }
 }
 

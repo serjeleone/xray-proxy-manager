@@ -1036,6 +1036,38 @@ async function refreshSubscription() {
   } catch (error) { toast(`Ошибка: ${error.message}`, true); }
 }
 
+async function convertSubscription() {
+  const button = $('convertSubscription');
+  try {
+    button.disabled = true;
+    toast('Конвертация подписки…');
+    const response = await fetch(api('api/subscription/convert'), { cache: 'no-store' });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'Sing-box subscription.json';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    const converted = Number.parseInt(response.headers.get('X-XPM-Converted-Count') || '0', 10);
+    const skipped = Number.parseInt(response.headers.get('X-XPM-Skipped-Count') || '0', 10);
+    const suffix = skipped > 0 ? ` · пропущено: ${skipped}` : '';
+    toast(converted > 0 ? `Сконвертировано: ${converted}${suffix}` : 'Sing-box подписка скачана');
+  } catch (error) {
+    toast(`Ошибка конвертации: ${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function toggleSlotMode() {
   const dualEnabled = Boolean(state.payload?.blue_green?.dual_slot_enabled);
   const desired = !dualEnabled;
@@ -1188,6 +1220,7 @@ document.addEventListener('keydown', (event) => {
 });
 $('testAllButton').addEventListener('click', () => testCandidates());
 $('refreshButton').addEventListener('click', refreshSubscription);
+$('convertSubscription').addEventListener('click', convertSubscription);
 $('slotModeButton').addEventListener('click', toggleSlotMode);
 $('trafficButton').addEventListener('click', toggleTraffic);
 $('stopDrainTopButton').addEventListener('click', () => stopDrainingSlot($('stopDrainTopButton').dataset.stopSlot));
