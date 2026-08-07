@@ -237,6 +237,19 @@ button:hover:not(:disabled)::after { opacity: 1; }
   gap: var(--button-row-gap);
 }
 .subscription-actions .button { flex: 0 0 auto; align-self: center; }
+.refresh-label-mobile { display: none; }
+.refresh-label-desktop { display: inline; }
+
+@media (min-width: 761px) {
+  .subscription-actions { flex-wrap: nowrap; }
+  .subscription-actions .button {
+    min-width: 0;
+    flex: 1 1 auto;
+    padding-inline: 5px;
+    font-size: .78rem;
+    white-space: nowrap;
+  }
+}
 .button.compact.secondary.subscription-error {
   color: #251602;
   background: var(--amber);
@@ -796,15 +809,22 @@ body.modal-open { overflow: hidden; }
 /* Text controls inherit the desktop centering model on mobile. */
 @media (max-width: 760px) {
   .subscription-actions {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
     gap: var(--button-row-gap);
   }
   .subscription-actions .button {
-    width: 100%;
-    flex: 0 0 auto;
-    align-self: stretch;
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+    align-self: center;
+    padding-inline: 10px;
+    font-size: .76rem;
+    white-space: nowrap;
   }
+  .refresh-label-mobile { display: inline; }
+  .refresh-label-desktop { display: none; }
 }
 
 @media (max-width: 470px) {

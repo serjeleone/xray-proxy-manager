@@ -1060,7 +1060,7 @@ async function convertSubscription() {
     const converted = Number.parseInt(response.headers.get('X-XPM-Converted-Count') || '0', 10);
     const skipped = Number.parseInt(response.headers.get('X-XPM-Skipped-Count') || '0', 10);
     const suffix = skipped > 0 ? ` · пропущено: ${skipped}` : '';
-    toast(converted > 0 ? `Сконвертировано: ${converted}${suffix}` : 'Sing-box подписка скачана');
+    toast(converted > 0 ? `Сконвертировано: ${converted} outbounds${suffix}` : 'Sing-box подписка скачана');
   } catch (error) {
     toast(`Ошибка конвертации: ${error.message}`, true);
   } finally {

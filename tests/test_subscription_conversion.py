@@ -176,6 +176,13 @@ def test_convert_subscription_protocols_transports_tls_and_groups(m):
         "converted_count": 8,
         "skipped": [],
     }
+    assert config["log"] == {"level": "error", "timestamp": True}
+    assert config["inbounds"] == [{
+        "type": "socks",
+        "tag": "socks-in",
+        "listen": "127.0.0.1",
+        "listen_port": 1080,
+    }]
     nodes = config["outbounds"][:-4]
     assert [node["type"] for node in nodes] == [
         "vless", "vmess", "trojan", "shadowsocks", "socks", "vless", "http", "vless"

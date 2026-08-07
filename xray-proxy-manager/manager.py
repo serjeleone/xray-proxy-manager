@@ -58,7 +58,7 @@ ADAPTIVE_DRAIN_GRACE_SECONDS = 5
 ADAPTIVE_DRAIN_IDLE_POLLS = 3
 ADAPTIVE_DRAIN_HARD_TIMEOUT_SECONDS = 30
 SWITCHING_PRESETS = {'smooth', 'adaptive', 'forced'}
-ADDON_VERSION = '0.9.0'
+ADDON_VERSION = '0.9.1'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_TEST_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -427,7 +427,15 @@ def convert_xray_subscription_to_sing_box(
 
     node_tags = [str(node['tag']) for node in nodes]
     config = _sing_box_compact({
-        'log': {'level': 'info', 'timestamp': True},
+        'log': {'level': 'error', 'timestamp': True},
+        'inbounds': [
+            {
+                'type': 'socks',
+                'tag': 'socks-in',
+                'listen': '127.0.0.1',
+                'listen_port': 1080,
+            },
+        ],
         'outbounds': nodes + [
             {
                 'type': 'urltest',
