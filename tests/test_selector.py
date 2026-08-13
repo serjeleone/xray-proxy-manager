@@ -83,6 +83,8 @@ def test_connection_helpers(m, manager_factory):
     assert m.XrayManager.connection_id(connections[1]) == "2"
     assert m.XrayManager.connection_total_bytes(connections[1]) == 5
     assert instance.connections_for_slot(connections, "xray-b") == [connections[2]]
+
+
     summary = instance.connection_summary({
         "id": "7", "chains": ["xray-a"], "metadata": {
             "sourceIP": "10.0.0.2", "sourcePort": 1234, "host": "example.org", "destinationPort": 443, "network": "tcp"
@@ -91,6 +93,31 @@ def test_connection_helpers(m, manager_factory):
     assert "source=10.0.0.2:1234" in summary
     assert "destination=example.org:443" in summary
     assert "bytes=3" in summary
+
+
+def test_active_throughput_counts_download_only(m, manager_factory):
+    instance = manager_factory()
+    first_connections = [
+        {"id": "1", "chains": ["xray-a"], "upload": 1_000, "download": 1_000_000},
+        {"id": "2", "chains": ["xray-a"], "upload": 2_000, "download": 500_000},
+        {"id": "3", "chains": ["xray-b"], "upload": 9_000_000, "download": 9_000_000},
+    ]
+    first = instance.update_active_throughput("xray-a", first_connections, sampled_at=10.0)
+    assert first["bytes_per_second"] == 0
+
+    second_connections = [
+        # Upload grows dramatically, but it must not affect the displayed inbound speed.
+        {"id": "1", "chains": ["xray-a"], "upload": 900_000_000, "download": 2_000_000},
+        {"id": "2", "chains": ["xray-a"], "upload": 700_000_000, "download": 1_000_000},
+        {"id": "4", "chains": ["xray-a"], "upload": 600_000_000, "download": 500_000},
+    ]
+    second = instance.update_active_throughput("xray-a", second_connections, sampled_at=11.0)
+    assert second["bytes_per_second"] == 2_000_000
+    assert second["megabytes_per_second"] == pytest.approx(2.0)
+
+    # A slot change starts a fresh sample instead of mixing counters from two slots.
+    switched = instance.update_active_throughput("xray-b", first_connections, sampled_at=12.0)
+    assert switched["bytes_per_second"] == 0
 
 
 def test_capture_drain_connection_baseline_success_and_error(m, manager_factory):
@@ -178,6 +205,7 @@ def test_selector_wait_and_loop(m, manager_factory):
     instance.refresh_selector_status = lambda: calls.append(True)
     instance.selector_status_loop()
     assert calls == [True]
+
 
 
 def test_close_slot_selector_connections_uses_delete(m, manager_factory):

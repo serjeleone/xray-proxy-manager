@@ -240,7 +240,7 @@ def test_run_starts_background_workers_and_all_servers(m, manager_factory, monke
         ("0.0.0.0", 8124),
         ("0.0.0.0", m.WATCHDOG_PORT),
     }
-    assert len(started_targets) == 9  # six workers and three servers
+    assert len(started_targets) == 10  # seven workers and three servers
 
 
 def test_run_rejects_watchdog_port_for_ingress(m, manager_factory, monkeypatch):

@@ -17,6 +17,7 @@ class FakeManager:
         self.calls = []
         self.router_state = {"rule_enabled": True}
     def status_payload(self): return {"xray_running": True, "value": 1}
+    def throughput_payload(self): return {"available": True, "slot": "xray-a", "megabytes_per_second": 12.3}
     def select_candidate(self, value): self.calls.append(("select", value))
     def request_latency_test(self, ids=None): self.calls.append(("test", ids)); return True
     def request_refresh(self): self.calls.append(("refresh",)); return True

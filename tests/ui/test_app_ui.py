@@ -63,7 +63,7 @@ def base_payload() -> dict:
         ),
     ]
     return {
-        "version": "0.9.1",
+        "version": "0.9.2",
         "xray_version": "Xray 26.7.28",
         "xray_running": True,
         "home_assistant_host": "192.0.2.250",
@@ -119,7 +119,7 @@ def base_payload() -> dict:
             "refresh": {"running": False, "message": ""},
             "switch": {"running": False, "message": ""},
         },
-        "release_notes": {"version": "0.9.1", "items": ["Тестовая версия"]},
+        "release_notes": {"version": "0.9.2", "items": ["Тестовая версия"]},
     }
 
 
@@ -129,6 +129,11 @@ class ApiHarness:
         self.requests: list[dict] = []
         self.status_requests = 0
         self.logs = ["first line", "proxy connected", "last line"]
+        self.throughput = {
+            "available": True, "slot": "xray-b",
+            "bytes_per_second": 15_400_000.0, "megabytes_per_second": 15.4,
+            "updated_at": 1_700_000_000, "error": "",
+        }
         self.cors_headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -153,6 +158,9 @@ class ApiHarness:
         if request.method == "GET" and path == "/api/logs":
             route.fulfill(json={"lines": self.logs, "total": len(self.logs)}, headers=self.cors_headers)
             return
+        if request.method == "GET" and path == "/api/throughput":
+            route.fulfill(json=self.throughput, headers=self.cors_headers)
+            return
         body = json.loads(request.post_data or "{}")
         self.requests.append({"method": request.method, "path": path, "body": body})
         response = self.responses.get(path, {})
@@ -175,7 +183,7 @@ def open_app(page: Page, web_app_html: str, payload: dict | None = None) -> ApiH
     harness = ApiHarness(copy.deepcopy(payload or base_payload()))
     page.route("**/api/**", harness.handler)
     page.set_content(web_app_html, wait_until="networkidle")
-    expect(page.locator("#versionBadge")).to_have_text("v0.9.1")
+    expect(page.locator("#versionBadge")).to_have_text("v0.9.2")
     return harness
 
 

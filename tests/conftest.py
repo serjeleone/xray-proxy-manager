@@ -195,6 +195,17 @@ def manager_factory(m, candidate_factory, tmp_path):
             "connections_supported": False,
             "last_checked_at": None,
         }
+        instance.throughput_state = {
+            "available": False,
+            "slot": "xray-a",
+            "bytes_per_second": 0.0,
+            "megabytes_per_second": 0.0,
+            "updated_at": None,
+            "error": "",
+        }
+        instance._throughput_last_slot = ""
+        instance._throughput_last_sample_at = None
+        instance._throughput_connection_download_bytes = {}
         instance.router_state = {
             "configured": True,
             "available": False,
@@ -233,7 +244,7 @@ def isolated_paths(m, monkeypatch, tmp_path):
     (web / "style.css").write_text("style", encoding="utf-8")
     (web / "favicon.svg").write_text("svg", encoding="utf-8")
     changelog = tmp_path / "CHANGELOG.md"
-    changelog.write_text("## v0.9.1\n\n- Change one\n- Change two\n", encoding="utf-8")
+    changelog.write_text("## v0.9.2\n\n- Change one\n- Change two\n", encoding="utf-8")
 
     paths = {
         "OPTIONS_PATH": data / "options.json",

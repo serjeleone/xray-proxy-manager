@@ -58,7 +58,7 @@ ADAPTIVE_DRAIN_GRACE_SECONDS = 5
 ADAPTIVE_DRAIN_IDLE_POLLS = 3
 ADAPTIVE_DRAIN_HARD_TIMEOUT_SECONDS = 30
 SWITCHING_PRESETS = {'smooth', 'adaptive', 'forced'}
-ADDON_VERSION = '0.9.1'
+ADDON_VERSION = '0.9.2'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_TEST_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -1268,6 +1268,17 @@ class XrayManager:
             'connections_supported': False,
             'last_checked_at': None,
         }
+        self.throughput_state: dict[str, Any] = {
+            'available': False,
+            'slot': self.active_slot_tag,
+            'bytes_per_second': 0.0,
+            'megabytes_per_second': 0.0,
+            'updated_at': None,
+            'error': '',
+        }
+        self._throughput_last_slot = ''
+        self._throughput_last_sample_at: float | None = None
+        self._throughput_connection_download_bytes: dict[str, int] = {}
         self.router_state: dict[str, Any] = {
             'configured': self.router_control_enabled,
             'available': False,
@@ -1958,8 +1969,8 @@ class XrayManager:
                 error=True,
             )
 
-    def selector_connections(self) -> list[dict[str, Any]]:
-        payload = self.selector_api_request('GET', '/connections', timeout=15)
+    def selector_connections(self, timeout: float = 15) -> list[dict[str, Any]]:
+        payload = self.selector_api_request('GET', '/connections', timeout=timeout)
         connections = payload.get('connections') if isinstance(payload, dict) else None
         if not isinstance(connections, list):
             raise RuntimeError('Selector API /connections response has no connection list')
@@ -2006,6 +2017,13 @@ class XrayManager:
                 pass
         return total
 
+    @staticmethod
+    def connection_download_bytes(item: dict[str, Any]) -> int:
+        try:
+            return max(0, int(item.get('download') or 0))
+        except (TypeError, ValueError):
+            return 0
+
     def connections_for_slot(
         self,
         connections: list[dict[str, Any]],
@@ -2015,6 +2033,93 @@ class XrayManager:
             item for item in connections
             if isinstance(item.get('chains'), list) and slot_tag in item['chains']
         ]
+
+    def update_active_throughput(
+        self,
+        slot_tag: str,
+        connections: list[dict[str, Any]],
+        sampled_at: float | None = None,
+    ) -> dict[str, Any]:
+        sample_time = time.monotonic() if sampled_at is None else float(sampled_at)
+        current_bytes = {
+            connection_id: self.connection_download_bytes(item)
+            for item in self.connections_for_slot(connections, slot_tag)
+            if (connection_id := self.connection_id(item))
+        }
+
+        with self.lock:
+            same_slot = self._throughput_last_slot == slot_tag
+            previous_at = self._throughput_last_sample_at
+            previous_bytes = self._throughput_connection_download_bytes
+            bytes_per_second = 0.0
+
+            if same_slot and previous_at is not None and sample_time > previous_at:
+                transferred = 0
+                for connection_id, total_bytes in current_bytes.items():
+                    previous_total = previous_bytes.get(connection_id)
+                    if previous_total is None or total_bytes < previous_total:
+                        transferred += total_bytes
+                    else:
+                        transferred += total_bytes - previous_total
+                bytes_per_second = transferred / (sample_time - previous_at)
+
+            self._throughput_last_slot = slot_tag
+            self._throughput_last_sample_at = sample_time
+            self._throughput_connection_download_bytes = current_bytes
+            self.throughput_state.update({
+                'available': True,
+                'slot': slot_tag,
+                'bytes_per_second': bytes_per_second,
+                'megabytes_per_second': bytes_per_second / 1_000_000,
+                'updated_at': now_ts(),
+                'error': '',
+            })
+            return copy.deepcopy(self.throughput_state)
+
+    def reset_active_throughput(self, slot_tag: str = '', error: str = '') -> None:
+        with self.lock:
+            self._throughput_last_slot = slot_tag
+            self._throughput_last_sample_at = None
+            self._throughput_connection_download_bytes = {}
+            self.throughput_state.update({
+                'available': False,
+                'slot': slot_tag,
+                'bytes_per_second': 0.0,
+                'megabytes_per_second': 0.0,
+                'updated_at': now_ts(),
+                'error': error,
+            })
+
+    def refresh_active_throughput(self) -> None:
+        if not self.selector_control_enabled:
+            self.reset_active_throughput(error='Управление selector отключено')
+            return
+
+        with self.lock:
+            reported_slot = str(self.selector_state.get('current') or '')
+            slot_tag = reported_slot if reported_slot in SLOT_TAGS else self.active_slot_tag
+            slot_running = self.slots[slot_tag].running()
+        if not slot_running:
+            self.reset_active_throughput(slot_tag, 'Активный Xray-слот не работает')
+            return
+
+        try:
+            connections = self.selector_connections(timeout=2)
+            self.update_active_throughput(slot_tag, connections)
+        except Exception as exc:
+            self.reset_active_throughput(slot_tag, str(exc))
+
+    def active_throughput_loop(self) -> None:
+        while not self.stop_event.is_set():
+            started = time.monotonic()
+            self.refresh_active_throughput()
+            elapsed = time.monotonic() - started
+            if self.stop_event.wait(max(0.0, 1.0 - elapsed)):
+                break
+
+    def throughput_payload(self) -> dict[str, Any]:
+        with self.lock:
+            return copy.deepcopy(self.throughput_state)
 
     def connection_summary(self, item: dict[str, Any]) -> str:
         metadata = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
@@ -5880,6 +5985,7 @@ class XrayManager:
         threading.Thread(target=self.xray_monitor_loop, daemon=True).start()
         threading.Thread(target=self.drain_monitor_loop, daemon=True).start()
         threading.Thread(target=self.selector_status_loop, daemon=True).start()
+        threading.Thread(target=self.active_throughput_loop, daemon=True).start()
         threading.Thread(target=self.router_status_loop, daemon=True).start()
 
         handler_factory = lambda *args, **kwargs: WebHandler(self, *args, **kwargs)
@@ -6094,6 +6200,9 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
             return
         if path.endswith('/api/status'):
             self.send_json(self.manager.status_payload())
+            return
+        if path.endswith('/api/throughput'):
+            self.send_json(self.manager.throughput_payload())
             return
         if path.endswith('/api/subscription/convert'):
             try:

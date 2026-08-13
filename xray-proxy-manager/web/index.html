@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=30">
+  <link rel="stylesheet" href="style.css?ui=32">
 </head>
 <body>
   <main class="shell">
@@ -46,6 +46,7 @@
           <svg class="traffic-icon icon-error" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7h2v7h-2V7Zm0 9h2v2h-2v-2Z"/></svg>
         </button>
         <h2 id="activeName">Активный outbound не определён</h2>
+        <div id="throughputBadge" class="throughput-badge" title="Входящая скорость активного слота"><span id="throughputValue">0.0 МБ/с</span></div>
       </div>
 
       <div class="hero-details">
@@ -287,6 +288,6 @@
     </div>
   </div>
 
-  <script src="app.js?ui=20"></script>
+  <script src="app.js?ui=22"></script>
 </body>
 </html>

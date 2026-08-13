@@ -24,6 +24,7 @@ const state = {
   statusRefreshDeferred: false,
   changelogOpen: false,
   releaseNotes: [],
+  throughputFetchInFlight: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -930,6 +931,38 @@ async function fetchStatus(force = false) {
   }
 }
 
+function formatThroughput(value) {
+  const numeric = Number(value);
+  const safe = Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+  return `${safe.toFixed(1)} МБ/с`;
+}
+
+function renderThroughput(payload) {
+  const badge = $('throughputBadge');
+  const valueNode = $('throughputValue');
+  if (!badge || !valueNode) return;
+  const value = payload?.available ? payload.megabytes_per_second : 0;
+  valueNode.textContent = formatThroughput(value);
+  const slot = payload?.slot || state.payload?.blue_green?.active_slot || '—';
+  badge.title = payload?.available
+    ? `Входящая скорость активного слота [${slot}]`
+    : (payload?.error || 'Входящая скорость активного слота недоступна');
+}
+
+async function fetchThroughput() {
+  if (state.throughputFetchInFlight) return;
+  state.throughputFetchInFlight = true;
+  try {
+    const response = await fetch(api('api/throughput'), { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    renderThroughput(await response.json());
+  } catch (_error) {
+    renderThroughput({ available: false });
+  } finally {
+    state.throughputFetchInFlight = false;
+  }
+}
+
 async function post(path, body = {}) {
   const response = await fetch(api(path), {
     method: 'POST',
@@ -1275,4 +1308,6 @@ $('cancelRestartButton').addEventListener('click', hideRestartModal);
 window.addEventListener('resize', () => window.requestAnimationFrame(positionLogFileControls));
 
 fetchStatus();
+fetchThroughput();
 setInterval(fetchStatus, 3000);
+setInterval(fetchThroughput, 1000);
