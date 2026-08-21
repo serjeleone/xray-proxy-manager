@@ -672,21 +672,21 @@ body.modal-open { overflow: hidden; }
   word-break: normal;
 }
 .throughput-badge {
-  min-width: 82px;
+  min-width: 70px;
   width: max-content;
-  height: 30px;
+  height: 26px;
   align-self: start;
   justify-self: end;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 9px;
+  padding: 0 7px;
   border: 1px solid rgba(255,255,255,.13);
   border-radius: 24px;
   color: #171006;
   background: var(--amber);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 0 5px 14px rgba(0,0,0,.28);
-  font-size: .78rem;
+  font-size: .72rem;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
   line-height: 1;
@@ -694,12 +694,14 @@ body.modal-open { overflow: hidden; }
 }
 .throughput-badge > span {
   display: inline-block;
-  transform: translateY(1px);
+  transform: translate(1px, 1px);
 }
 
 .traffic-button {
-  width: 74px;
-  height: 74px;
+  width: 77px;
+  height: 77px;
+  position: relative;
+  top: -1.5px;
   padding: 0;
   border: 0;
   border-radius: 50%;
@@ -718,7 +720,7 @@ body.modal-open { overflow: hidden; }
 .traffic-button.error { background: var(--bad); color: #220408; }
 .traffic-button.unknown { background: #404040; color: #bdbdbd; }
 .traffic-button:disabled { cursor: not-allowed; opacity: .7; }
-.traffic-icon { width: 53px; height: 53px; fill: currentColor; display: none; }
+.traffic-icon { width: 55px; height: 55px; fill: currentColor; display: none; }
 .traffic-button.enabled .icon-play,
 .traffic-button.paused .icon-pause,
 .traffic-button.error .icon-error,
@@ -779,8 +781,8 @@ body.modal-open { overflow: hidden; }
 @media (max-width: 760px) {
   .hero-card { min-height: 0; height: auto; }
   .hero-primary-row { grid-template-columns: 76px minmax(0, 1fr) auto; gap: 16px; min-height: 72px; }
-  .traffic-button { width: 68px; height: 68px; }
-  .traffic-icon { width: 48px; height: 48px; }
+  .traffic-button { width: 71px; height: 71px; top: -1.5px; }
+  .traffic-icon { width: 50px; height: 50px; }
   .hero-primary-row h2 { font-size: clamp(1.5rem, 5.8vw, 1.72rem); line-height: 1.08; }
   .hero-details p { font-size: .76rem; }
 }
@@ -788,8 +790,8 @@ body.modal-open { overflow: hidden; }
 @media (max-width: 470px) {
   .hero-card { min-height: 0; height: auto; padding: 16px 15px 15px; }
   .hero-primary-row { grid-template-columns: 70px minmax(0, 1fr) auto; gap: 14px; min-height: 68px; }
-  .traffic-button { width: 64px; height: 64px; }
-  .traffic-icon { width: 44px; height: 44px; }
+  .traffic-button { width: 67px; height: 67px; top: -1.5px; }
+  .traffic-icon { width: 46px; height: 46px; }
   .hero-primary-row h2 { font-size: 1.48rem; line-height: 1.08; }
   .hero-details { gap: 4px; }
   #activeMeta { font-size: .72rem; line-height: 1.4; }

@@ -175,8 +175,9 @@ def test_auto_checker_loop_threshold_triggers_emergency_failover(
     manager_factory, candidate_factory,
 ):
     active = candidate_factory("active")
-    backup = candidate_factory("backup")
-    instance = manager_factory([active, backup])
+    failed_backup = candidate_factory("failed-backup")
+    working_backup = candidate_factory("working-backup")
+    instance = manager_factory([active, failed_backup, working_backup])
     instance.active_candidate_id = active.id
     instance.slots["xray-a"].candidate_id = active.id
     instance.state["auto_check_failures"] = instance.auto_check_failures - 1
@@ -186,15 +187,22 @@ def test_auto_checker_loop_threshold_triggers_emergency_failover(
     instance.check_draining_slots_health = lambda: None
     instance.check_active_tunnel = lambda: (False, None, [], "timeout")
     instance.format_probe_results = lambda _checks: ""
-    instance.choose_failover_candidate = lambda: backup
+    instance.failover_candidates = lambda: [failed_backup, working_backup]
     switched: list[tuple] = []
-    instance.restart_xray_for = lambda *args, **kwargs: switched.append((args, kwargs))
+
+    def restart(candidate, *args, **kwargs):
+        switched.append(((candidate, *args), kwargs))
+        if candidate is failed_backup:
+            raise RuntimeError("xray-b validation failed: timeout")
+
+    instance.restart_xray_for = restart
 
     instance.auto_checker_loop()
     assert instance.state["auto_check_failures"] == instance.auto_check_failures
     assert instance.latencies[active.id]["status"] == "error"
-    assert switched[0][0][0] is backup
-    assert switched[0][1]["emergency_failover"] is True
+    assert instance.latencies[failed_backup.id]["status"] == "error"
+    assert [call[0][0] for call in switched] == [failed_backup, working_backup]
+    assert all(call[1]["emergency_failover"] is True for call in switched)
 
 
 def test_run_starts_background_workers_and_all_servers(m, manager_factory, monkeypatch):

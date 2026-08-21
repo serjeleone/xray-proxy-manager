@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=32">
+  <link rel="stylesheet" href="style.css?ui=34">
 </head>
 <body>
   <main class="shell">
@@ -85,7 +85,7 @@
           </label>
           <label class="subscription-interval-field">
             <span>Период, часов</span>
-            <input id="subscriptionInterval" type="number" min="0" max="720" step="1" inputmode="numeric">
+            <input id="subscriptionInterval" type="number" min="0" max="720" step="0.1" inputmode="decimal">
           </label>
         </div>
         <small id="subscriptionMeta" class="card-status">—</small>
@@ -288,6 +288,6 @@
     </div>
   </div>
 
-  <script src="app.js?ui=22"></script>
+  <script src="app.js?ui=23"></script>
 </body>
 </html>

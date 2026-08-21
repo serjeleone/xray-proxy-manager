@@ -297,7 +297,7 @@ function renderPreferredProtocols(payload) {
 function subscriptionFormValues() {
   return {
     subscription_url: $('subscriptionUrl').value.trim(),
-    update_interval_hours: Number.parseInt($('subscriptionInterval').value, 10),
+    update_interval_hours: Number.parseFloat($('subscriptionInterval').value),
   };
 }
 

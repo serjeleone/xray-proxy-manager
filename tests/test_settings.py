@@ -75,7 +75,7 @@ def test_apply_and_validate_runtime_values(m, manager_factory):
         "auto_check_failures": "5",
         "auto_check_max_latency_ms": "0",
         "auto_best_check_interval_seconds": "120",
-        "update_interval_hours": "0",
+        "update_interval_hours": "0.5",
         "ui_sort": "unknown",
         "ui_protocol_filter": "vless",
         "ui_max_ping_ms": "300",
@@ -90,6 +90,7 @@ def test_apply_and_validate_runtime_values(m, manager_factory):
     assert instance.auto_switch_preferred_country == "FI"
     assert instance.auto_switch_preferred_protocol == "TROJAN"
     assert instance.auto_switch_excluded == "RU, bad node"
+    assert instance.update_interval_hours == 0.5
     assert instance.ui_sort == "ping-asc"
     assert instance.ui_protocol_filter == "VLESS"
     assert instance.ui_hide_unavailable is True
@@ -107,13 +108,14 @@ def test_apply_and_validate_runtime_values(m, manager_factory):
         "auto_check_failures": 1,
         "auto_check_max_latency_ms": 10000,
         "auto_best_check_interval_seconds": 60,
-        "update_interval_hours": 720,
+        "update_interval_hours": 0.5,
         "ui_max_ping_ms": 0,
         "ui_sort": "name-asc",
         "ui_protocol_filter": "all",
         "ui_hide_unavailable": True,
         "ui_hide_excluded": False,
     })
+    assert valid["update_interval_hours"] == 0.5
     assert valid["switching_preset"] == "forced"
     assert valid["auto_switch_preferred_country"] == "NL"
     assert valid["auto_switch_preferred_protocol"] == "VLESS"
@@ -139,16 +141,21 @@ def test_validate_runtime_changes_rejects_invalid_input(m, manager_factory, chan
 def test_update_runtime_settings_persists_and_signals(m, manager_factory, isolated_paths, monkeypatch):
     instance = manager_factory()
     monkeypatch.setattr(m, "RUNTIME_OPTIONS_PATH", isolated_paths.RUNTIME_OPTIONS_PATH)
+    monkeypatch.setattr(m, "now_ts", lambda: 1000.0)
     result = instance.update_runtime_settings({
         "ui_sort": "name-desc",
         "auto_check_failures": 7,
+        "update_interval_hours": 0.5,
     })
     assert result["ok"] is True
     assert instance.ui_sort == "name-desc"
     assert instance.auto_check_failures == 7
+    assert instance.update_interval_hours == 0.5
+    assert instance.next_update_at == 2800.0
     assert instance.settings_event.is_set()
     persisted = json.loads(isolated_paths.RUNTIME_OPTIONS_PATH.read_text(encoding="utf-8"))
     assert persisted["ui_sort"] == "name-desc"
+    assert persisted["update_interval_hours"] == 0.5
     with pytest.raises(ValueError, match="отдельной кнопкой"):
         instance.update_runtime_settings({"dual_slot_enabled": False})
 

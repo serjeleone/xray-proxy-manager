@@ -1,5 +1,5 @@
 name: Xray Proxy Manager
-version: "0.9.2"
+version: "0.9.3"
 slug: xray-proxy-manager
 image: "ghcr.io/serjeleone/xray-proxy-manager"
 description: "Управление Xray через один или два SOCKS5-слота, проверка outbound и безопасное переключение"
@@ -81,7 +81,7 @@ options:
 schema:
   subscription_url: str
   config_index: int(0,)
-  update_interval_hours: int(0,720)
+  update_interval_hours: float(0,720)
   user_agent: str
 
   dual_slot_enabled: bool

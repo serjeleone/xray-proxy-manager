@@ -108,8 +108,13 @@ def test_port_reservation_parallelism_wait_and_proxy_curl(m, manager_factory, mo
     process.dead = True
     assert not instance.wait_for_port(1, process, timeout=0.1)
 
-    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess([], 0, "0.123", ""))
+    curl_commands = []
+    def successful_curl(command, *args, **kwargs):
+        curl_commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "0.123", "")
+    monkeypatch.setattr(m.subprocess, "run", successful_curl)
     assert instance.proxy_curl("127.0.0.1", 10808, "https://x", 3, auth=False) == (True, 123.0, "")
+    assert "-f" not in curl_commands[-1]
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess([], 1, "", "failed"))
     assert instance.proxy_curl("127.0.0.1", 10808, "https://x", 3, auth=False)[0] is False
 
@@ -263,7 +268,7 @@ def test_effective_active_candidate_and_status_payload_keep_running_removed_outb
     assert active_card["slot_tags"] == ["xray-a"]
     assert any(item["id"] == current.id for item in payload["candidates"])
     assert payload["blue_green"]["active_slot"] == "xray-a"
-    assert payload["release_notes"]["version"] == "v0.9.2"
+    assert payload["release_notes"]["version"] == "v0.9.3"
     assert payload["auto_checker"]["last_switch_source"] == "manual_ui"
 
 

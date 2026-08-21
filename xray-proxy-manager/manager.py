@@ -7,6 +7,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 import hashlib
 import http.server
 import json
+import math
 import os
 import re
 import shlex
@@ -58,7 +59,7 @@ ADAPTIVE_DRAIN_GRACE_SECONDS = 5
 ADAPTIVE_DRAIN_IDLE_POLLS = 3
 ADAPTIVE_DRAIN_HARD_TIMEOUT_SECONDS = 30
 SWITCHING_PRESETS = {'smooth', 'adaptive', 'forced'}
-ADDON_VERSION = '0.9.2'
+ADDON_VERSION = '0.9.3'
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 DEFAULT_SECONDARY_TEST_URL = 'https://cp.cloudflare.com/generate_204'
 
@@ -835,6 +836,18 @@ def bounded_int(value: Any, minimum: int, maximum: int, field: str) -> int:
     return parsed
 
 
+def bounded_float(value: Any, minimum: float, maximum: float, field: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f'{field}: требуется число') from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f'{field}: требуется конечное число')
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f'{field}: допустимый диапазон {minimum:g}–{maximum:g}')
+    return parsed
+
+
 def extract_endpoint(outbound: dict[str, Any]) -> tuple[str, int | None]:
     settings = outbound.get('settings') or {}
 
@@ -1338,7 +1351,7 @@ class XrayManager:
             source.get('auto_best_check_interval_seconds', 600), 60, 86400,
             'auto_best_check_interval_seconds',
         )
-        self.update_interval_hours = bounded_int(
+        self.update_interval_hours = bounded_float(
             source.get('update_interval_hours', 1), 0, 720, 'update_interval_hours'
         )
         sort_value = str(source.get('ui_sort') or 'ping-asc')
@@ -1386,7 +1399,7 @@ class XrayManager:
             elif key == 'auto_best_check_interval_seconds':
                 normalized[key] = bounded_int(value, 60, 86400, key)
             elif key == 'update_interval_hours':
-                normalized[key] = bounded_int(value, 0, 720, key)
+                normalized[key] = bounded_float(value, 0, 720, key)
             elif key == 'ui_max_ping_ms':
                 normalized[key] = bounded_int(value, 0, 10000, key)
             elif key == 'ui_sort':
@@ -4794,7 +4807,7 @@ class XrayManager:
         auth: bool,
     ) -> tuple[bool, float | None, str]:
         command = [
-            CURL_BIN, '-4', '-f', '-sS', '-o', '/dev/null', '-w', '%{time_total}',
+            CURL_BIN, '-4', '-sS', '-o', '/dev/null', '-w', '%{time_total}',
             '--socks5-hostname', f'{host}:{port}',
             '--connect-timeout', str(min(5, timeout_seconds)),
             '--max-time', str(timeout_seconds),
@@ -5355,33 +5368,127 @@ class XrayManager:
         ))
         return [item[1] for item in healthy]
 
-    def choose_failover_candidate(self) -> Candidate | None:
-        excluded_text = self.auto_switch_excluded or 'нет'
-        healthy = self.sorted_healthy_candidates(exclude_configured_countries=True)
-        active = self.slots[self.active_slot_tag].candidate or self.candidate_by_id(self.active_candidate_id)
-        alternatives = [item for item in healthy if not self.same_outbound(item, active)]
-        if alternatives:
-            return alternatives[0]
+    def failover_candidates(self) -> list[Candidate]:
+        """Return unique failover candidates in the order they should be tried.
 
-        log(
-            'no previous healthy latency result is available outside configured exclusions; '
-            f'running a fresh outbound test (configured exclusions: {excluded_text})',
-            error=True,
+        Previously healthy candidates are preferred because they are the most likely
+        to restore traffic immediately. Candidates without a currently healthy
+        latency result follow in the normal country/protocol preference order. The
+        actual standby-slot validation is the authoritative check, so a separate
+        pre-scan is intentionally avoided here.
+        """
+        active = (
+            self.slots[self.active_slot_tag].candidate
+            or self.candidate_by_id(self.active_candidate_id)
         )
-        for candidate in list(self.candidates):
-            if self.same_outbound(candidate, active):
+        healthy = [
+            candidate
+            for candidate in self.sorted_healthy_candidates(
+                exclude_configured_countries=True
+            )
+            if not self.same_outbound(candidate, active)
+        ]
+
+        ordered: list[Candidate] = []
+        for candidate in healthy:
+            if not any(self.same_outbound(candidate, seen) for seen in ordered):
+                ordered.append(candidate)
+
+        remaining = [
+            candidate
+            for candidate in self.candidates
+            if not self.same_outbound(candidate, active)
+            and not self.candidate_is_excluded(candidate)
+            and not any(self.same_outbound(candidate, seen) for seen in ordered)
+        ]
+        remaining.sort(key=lambda candidate: (
+            *self.candidate_preference_sort_key(candidate),
+            candidate.name.casefold(),
+        ))
+        ordered.extend(remaining)
+        return ordered
+
+    def choose_failover_candidate(self) -> Candidate | None:
+        candidates = self.failover_candidates()
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def failover_error_is_global(error: Exception) -> bool:
+        """Return True when trying another outbound cannot fix the failure."""
+        text = str(error).casefold()
+        markers = (
+            'selector api недоступен',
+            'переключение outbound уже выполняется',
+            'another outbound switch is already running',
+            'активный слот',
+            'blue-green switching is disabled',
+            'blue-green переключение требует',
+        )
+        return any(marker in text for marker in markers)
+
+    def emergency_failover(self, failures: int) -> Candidate | None:
+        """Try each eligible outbound once until one passes real validation."""
+        candidates = self.failover_candidates()
+        if not candidates:
+            excluded_text = self.auto_switch_excluded or 'нет'
+            log(
+                'auto-check could not find a failover outbound outside configured '
+                f'exclusions: {excluded_text}',
+                error=True,
+            )
+            return None
+
+        attempted: list[Candidate] = []
+        total = len(candidates)
+        for candidate in candidates:
+            if any(self.same_outbound(candidate, seen) for seen in attempted):
                 continue
-            if self.candidate_is_excluded(candidate):
+            attempted.append(candidate)
+            attempt = len(attempted)
+            log(
+                f'auto-check failover attempt {attempt}/{total}: '
+                f'{candidate.name} [{candidate.outbound_tag}]'
+            )
+            try:
+                self.restart_xray_for(
+                    candidate,
+                    f'emergency failover after {failures} consecutive degraded checks',
+                    source='auto_check_failover',
+                    preempt_draining=True,
+                    emergency_failover=True,
+                )
+            except Exception as exc:
+                if self.failover_error_is_global(exc):
+                    raise
+                checked_at = now_ts()
+                with self.lock:
+                    self.latencies[candidate.id] = {
+                        'status': 'error',
+                        'latency_ms': None,
+                        'checked_at': checked_at,
+                        'error': str(exc)[-500:],
+                    }
+                    self.save_latencies()
                 log(
-                    f'auto-check skipped excluded failover outbound: {candidate.name} '
-                    f'[{candidate.country_code}]',
+                    f'auto-check rejected failover outbound {candidate.name} '
+                    f'[{candidate.outbound_tag}]: {exc}; trying next candidate',
+                    error=True,
                 )
                 continue
-            result = self.test_candidate(candidate)
-            self.latencies[candidate.id] = result
-        self.save_latencies()
-        healthy = self.sorted_healthy_candidates(exclude_configured_countries=True)
-        return next((item for item in healthy if not self.same_outbound(item, active)), None)
+
+            log(
+                f'auto-check switched to {candidate.name}; old degraded slot will be '
+                'force-stopped after two successful checks',
+                error=True,
+            )
+            return candidate
+
+        log(
+            f'auto-check exhausted {len(attempted)} failover candidate(s); '
+            'no outbound passed validation',
+            error=True,
+        )
+        return None
 
     def auto_check_wait_seconds(self, current_time: int | None = None) -> float:
         if not self.auto_checker_enabled:
@@ -5506,27 +5613,7 @@ class XrayManager:
                 if failures < self.auto_check_failures:
                     continue
 
-                candidate = self.choose_failover_candidate()
-                if candidate is None:
-                    excluded_text = self.auto_switch_excluded or 'нет'
-                    log(
-                        'auto-check could not find a healthy failover outbound outside configured exclusions: '
-                        f'{excluded_text}',
-                        error=True,
-                    )
-                    continue
-                self.restart_xray_for(
-                    candidate,
-                    f'emergency failover after {failures} consecutive degraded checks',
-                    source='auto_check_failover',
-                    preempt_draining=True,
-                    emergency_failover=True,
-                )
-                log(
-                    f'auto-check switched to {candidate.name}; old degraded slot will be '
-                    'force-stopped after two successful checks',
-                    error=True,
-                )
+                self.emergency_failover(failures)
             except Exception as exc:
                 log(f'auto-check error: {exc}', error=True)
             finally:
