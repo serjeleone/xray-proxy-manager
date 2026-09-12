@@ -291,7 +291,7 @@ def test_set_slot_mode_noop_success_and_rollback(m, manager_factory, candidate_f
     assert instance.dual_slot_enabled is True
 
 
-def test_sync_supervisor_options(m, manager_factory, monkeypatch):
+def test_sync_supervisor_options(m, manager_factory, isolated_paths, monkeypatch):
     instance = manager_factory()
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
     ok, error = m.XrayManager.sync_supervisor_options(instance)

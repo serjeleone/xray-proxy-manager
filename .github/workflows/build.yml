@@ -43,6 +43,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       release_tag: ${{ steps.version.outputs.release_tag }}
       commit_subject: ${{ steps.metadata.outputs.commit_subject }}
+      publish: ${{ steps.version.outputs.publish }}
 
     steps:
       - name: Check out repository
@@ -55,7 +56,8 @@ jobs:
         id: metadata
         shell: bash
         run: |
-          commit_subject="$(git log -1 --pretty=%s)"
+          version="$(cat xray-proxy-manager/VERSION)"
+          commit_subject="$(git log -1 --pretty=%s --grep="^v${version} - ")"
 
           if [[ -z "${commit_subject}" ]]; then
             commit_subject="${GITHUB_REF_NAME}"
@@ -69,6 +71,7 @@ jobs:
         shell: bash
         env:
           PUBLISHED_TAG: ${{ github.event.release.tag_name }}
+          MANUAL_PUBLISH: ${{ inputs.publish }}
         run: |
           version="$(python scripts/check_version.py)"
 
@@ -95,6 +98,14 @@ jobs:
             fi
           fi
 
+          publish=false
+          if [[ "${GITHUB_EVENT_NAME}" == "release" || "${GITHUB_REF_TYPE}" == "tag" || "${MANUAL_PUBLISH}" == "true" ]]; then
+            publish=true
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]] \
+            && ! git show-ref --verify --quiet "refs/tags/${release_tag}"; then
+            publish=true
+          fi
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
 
@@ -371,7 +382,7 @@ jobs:
     needs:
       - prepare
 
-    if: ${{ github.event_name == 'release' || (github.event_name == 'push' && github.ref_type == 'tag') || inputs.publish == true }}
+    if: ${{ needs.prepare.outputs.publish == 'true' }}
 
     runs-on: ${{ matrix.os }}
 
@@ -424,7 +435,7 @@ jobs:
       - prepare
       - build
 
-    if: ${{ github.event_name == 'release' || (github.event_name == 'push' && github.ref_type == 'tag') || inputs.publish == true }}
+    if: ${{ needs.prepare.outputs.publish == 'true' }}
 
     runs-on: ubuntu-latest
 
@@ -448,7 +459,7 @@ jobs:
   release:
     name: Publish GitHub release
     needs: [prepare, manifest]
-    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    if: ${{ needs.prepare.outputs.publish == 'true' && github.event_name != 'release' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -480,6 +491,6 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag \
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
               --title "$RELEASE_TAG" --notes-file release-notes.md
           fi
