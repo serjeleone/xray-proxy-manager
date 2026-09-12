@@ -14,9 +14,9 @@ def test_router_key_name_and_candidates(m, manager_factory, monkeypatch, tmp_pat
             m.XrayManager.normalize_router_key_name(value)
     instance = manager_factory()
     instance.router_ssh_key_path_override = str(tmp_path / "custom")
-    monkeypatch.setattr(m, "ROUTER_PRIMARY_KEY_DIR", tmp_path / "primary")
-    monkeypatch.setattr(m, "ROUTER_SECONDARY_KEY_DIR", tmp_path / "secondary")
-    monkeypatch.setattr(m, "WORKDIR", tmp_path / "work")
+    monkeypatch.setattr(m.common, "ROUTER_PRIMARY_KEY_DIR", tmp_path / "primary")
+    monkeypatch.setattr(m.common, "ROUTER_SECONDARY_KEY_DIR", tmp_path / "secondary")
+    monkeypatch.setattr(m.common, "WORKDIR", tmp_path / "work")
     candidates = instance.router_key_candidates()
     assert candidates[0].name == "id_ed25519"
     assert Path(instance.router_ssh_key_path_override) in candidates
@@ -32,7 +32,7 @@ def test_ensure_public_key_file(m, manager_factory, monkeypatch, tmp_path):
     monkeypatch.setattr(m.subprocess, "run", lambda command, **kwargs: calls.append(command) or subprocess.CompletedProcess(command, 0, "ssh-ed25519 AAAA comment\n", ""))
     public = instance.ensure_public_key_file(private)
     assert public.read_text(encoding="utf-8") == "ssh-ed25519 AAAA comment xray-proxy-manager@homeassistant\n"
-    assert calls[0][:3] == [m.SSH_KEYGEN_BIN, "-y", "-f"]
+    assert calls[0][:3] == [m.common.SSH_KEYGEN_BIN, "-y", "-f"]
     assert oct(public.stat().st_mode & 0o777) == "0o644"
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess([], 0, "", ""))
     with pytest.raises(RuntimeError, match="did not return"):
@@ -48,7 +48,7 @@ def test_install_generated_key_with_password(m, manager_factory, monkeypatch):
         return subprocess.CompletedProcess(command, 0, "ok", "")
     monkeypatch.setattr(m.subprocess, "run", run)
     instance.install_generated_key_with_password("ssh-ed25519 AAAA")
-    assert captured["command"][0:2] == [m.SSHPASS_BIN, "-e"]
+    assert captured["command"][0:2] == [m.common.SSHPASS_BIN, "-e"]
     assert captured["kwargs"]["env"]["SSHPASS"] == "pw"
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess([], 1, "", "denied"))
     with pytest.raises(RuntimeError, match="denied"):
@@ -90,7 +90,7 @@ def test_router_ssh_command_password_and_key(m, manager_factory, tmp_path):
     instance.router_auth_method = "password"
     instance.router_ssh_password = "secret"
     command, env = instance.router_ssh_command("echo ok")
-    assert command[0:2] == [m.SSHPASS_BIN, "-e"]
+    assert command[0:2] == [m.common.SSHPASS_BIN, "-e"]
     assert env["SSHPASS"] == "secret"
     assert command[-2:] == ["root@192.0.2.1", "echo ok"]
 

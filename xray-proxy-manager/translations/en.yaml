@@ -8,6 +8,12 @@ configuration:
   update_interval_hours:
     name: Subscription update, hours
     description: Subscription download interval; 0 disables scheduled updates.
+  socks_listen_address:
+    name: SOCKS5 listen address
+    description: 0.0.0.0 preserves LAN access; 127.0.0.1 allows connections only from the Home Assistant host. Restart required.
+  socks_allowed_cidrs:
+    name: Allowed SOCKS5 networks
+    description: Allowed IPv4/IPv6 source networks. Setting this parameter to router obtains LAN subnets from OpenWrt over SSH at startup.
   socks_tcp_a:
     name: Slot A SOCKS port
     description: SOCKS5 port for xray-a; the same port number is used for TCP and UDP traffic.
@@ -37,7 +43,7 @@ configuration:
     description: Preserve old connections, adaptively close stalled sessions, or forcibly terminate all old sessions when changing slots.
   auto_switch_best_enabled:
     name: Select best outbound
-    description: After a full check, switch to a sufficiently faster option.
+    description: Automatic selection after checks and emergency failover. Disabling it keeps checks running without switching.
   auto_switch_preferred_country:
     name: Preferred country
     description: ISO country code prioritized when selecting the best outbound; if no suitable servers from that country are available, all other servers are considered.
@@ -55,7 +61,7 @@ configuration:
     description: Interval for the independent check of the active slot; the result is stored in the shared outbound latency file.
   auto_check_failures:
     name: Consecutive failure threshold
-    description: "Shared threshold of consecutive failures: used both for emergency failover of the active slot and for stopping a draining slot with one connection after full checks."
+    description: "Shared threshold of consecutive failures: used both for emergency failover of the active slot and for stopping an unavailable draining slot."
   auto_check_max_latency_ms:
     name: Maximum latency, ms
     description: 0 disables the limit; exceeding it is treated as an active-path failure and prevents switching to a candidate.
@@ -70,7 +76,7 @@ configuration:
     description: Maximum time allowed for a single latency measurement.
   latency_test_parallelism:
     name: Check parallelism
-    description: 0 selects a safe automatic limit; 1–32 sets the maximum number of concurrent checks.
+    description: -1 checks all outbounds at once; 0 selects an automatic limit from 2 to 8; 1–32 sets the maximum number of concurrent checks.
   primary_test_url:
     name: Primary test URL
     description: First control endpoint; used in parallel with the secondary URL in every check.

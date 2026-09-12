@@ -14,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 MANAGER_PATH = ROOT / "xray-proxy-manager" / "manager.py"
+sys.path.insert(0, str(MANAGER_PATH.parent))
 SPEC = importlib.util.spec_from_file_location("xray_proxy_manager_test_module", MANAGER_PATH)
 assert SPEC and SPEC.loader
 manager = importlib.util.module_from_spec(SPEC)
@@ -67,7 +68,7 @@ def candidate_factory(m):
         outbound_index: int = 0,
         outbound_tag: str | None = None,
     ):
-        return m.Candidate(
+        return m.models.Candidate(
             id=candidate_id,
             name=name or candidate_id,
             source_index=source_index,
@@ -90,6 +91,7 @@ def manager_factory(m, candidate_factory, tmp_path):
         instance.lock = threading.RLock()
         instance.switch_lock = threading.Lock()
         instance.router_lock = threading.Lock()
+        instance.options_sync_lock = threading.Lock()
         instance.stop_event = threading.Event()
         instance.settings_event = threading.Event()
         instance.preference_scan_generation = 0
@@ -221,8 +223,8 @@ def manager_factory(m, candidate_factory, tmp_path):
             "public_key": "",
         }
         instance.slots = {
-            "xray-a": m.XraySlot("xray-a", 10808, True, tmp_path / "a.json"),
-            "xray-b": m.XraySlot("xray-b", 10809, True, tmp_path / "b.json"),
+            "xray-a": m.models.XraySlot("xray-a", 10808, True, tmp_path / "a.json"),
+            "xray-b": m.models.XraySlot("xray-b", 10809, True, tmp_path / "b.json"),
         }
         instance.save_state = lambda: None
         instance.save_latencies = lambda: None
@@ -244,7 +246,7 @@ def isolated_paths(m, monkeypatch, tmp_path):
     (web / "style.css").write_text("style", encoding="utf-8")
     (web / "favicon.svg").write_text("svg", encoding="utf-8")
     changelog = tmp_path / "CHANGELOG.md"
-    changelog.write_text("## v0.9.3\n\n- Change one\n- Change two\n", encoding="utf-8")
+    changelog.write_text(f"## v{m.common.ADDON_VERSION}\n\n- Change one\n- Change two\n", encoding="utf-8")
 
     paths = {
         "OPTIONS_PATH": data / "options.json",
@@ -261,14 +263,14 @@ def isolated_paths(m, monkeypatch, tmp_path):
         "CHANGELOG_PATH": changelog,
     }
     for key, value in paths.items():
-        monkeypatch.setattr(m, key, value)
-    monkeypatch.setattr(m, "SLOT_CONFIG_PATHS", {
+        monkeypatch.setattr(m.common, key, value)
+    monkeypatch.setattr(m.common, "SLOT_CONFIG_PATHS", {
         "xray-a": work / "config.xray-a.json",
         "xray-b": work / "config.xray-b.json",
     })
-    m.RELEASE_NOTES_CACHE = None
-    m.LOG_BUFFER.clear()
-    m.RESERVED_TEST_PORTS.clear()
+    m.common.RELEASE_NOTES_CACHE = None
+    m.common.LOG_BUFFER.clear()
+    m.common.RESERVED_TEST_PORTS.clear()
     return SimpleNamespace(**paths)
 
 

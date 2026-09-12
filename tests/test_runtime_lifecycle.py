@@ -92,7 +92,7 @@ def test_periodic_update_loop_runs_due_refresh_and_reschedules_after_error(
     instance.stop_event = WaitSequence(False, True)
     calls: list[bool] = []
     instance.refresh_subscription_sync = lambda initial=False: calls.append(initial)
-    monkeypatch.setattr(m, "now_ts", lambda: 100)
+    monkeypatch.setattr(m.common, "now_ts", lambda: 100)
     instance.periodic_update_loop()
     assert calls == [False]
 
@@ -125,6 +125,7 @@ def test_xray_monitor_loop_rolls_back_or_clears_exited_process(manager_factory):
 
 def test_drain_monitor_stops_quiet_slot(manager_factory, monkeypatch):
     instance = manager_factory()
+    instance.active_slot_tag = "xray-b"
     slot = instance.slots["xray-a"]
     slot.draining = True
     slot.drain_zero_since = 1
@@ -136,7 +137,7 @@ def test_drain_monitor_stops_quiet_slot(manager_factory, monkeypatch):
     instance.connections_for_slot = lambda _items, _tag: []
     instance.connection_slot_stats = lambda _items, _tag: (0, 0, 0, 0)
     instance.local_tcp_connection_count = lambda _port: 0
-    monkeypatch.setattr("xray_proxy_manager_test_module.now_ts", lambda: 100)
+    monkeypatch.setattr("xpm.common.now_ts", lambda: 100)
     stopped: list[str] = []
     instance.stop_slot = stopped.append
 
@@ -238,15 +239,15 @@ def test_run_starts_background_workers_and_all_servers(m, manager_factory, monke
             return
 
     monkeypatch.setattr(m.threading, "Thread", FakeThread)
-    monkeypatch.setattr(m, "ThreadingHTTPServer", FakeServer)
-    monkeypatch.setattr(m, "ThreadingTCPProxyServer", FakeServer)
+    monkeypatch.setattr(m.web, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(m.web, "ThreadingTCPProxyServer", FakeServer)
 
     instance.run()
     assert len(instance.servers) == 3
     assert {server.address for server in instance.servers} == {
         ("127.0.0.1", instance.ui_port),
         ("0.0.0.0", 8124),
-        ("0.0.0.0", m.WATCHDOG_PORT),
+        ("0.0.0.0", m.common.WATCHDOG_PORT),
     }
     assert len(started_targets) == 10  # seven workers and three servers
 
@@ -255,7 +256,7 @@ def test_run_rejects_watchdog_port_for_ingress(m, manager_factory, monkeypatch):
     instance = manager_factory()
     instance.initialize = lambda: None
     instance.request_latency_test = lambda *args, **kwargs: False
-    instance.detect_ingress_port = lambda: m.WATCHDOG_PORT
+    instance.detect_ingress_port = lambda: m.common.WATCHDOG_PORT
     monkeypatch.setattr(m.threading, "Thread", lambda *args, **kwargs: SimpleNamespace(start=lambda: None))
     with pytest.raises(RuntimeError, match="reserved watchdog port"):
         instance.run()
@@ -344,8 +345,8 @@ def test_latency_job_records_candidate_and_runtime_slot_errors(
 
     assert instance.latencies[candidate.id]["status"] == "error"
     assert instance.latencies["slot:xray-b"]["status"] == "error"
-    assert "candidate down" in instance.latencies[candidate.id]["error"]
-    assert "slot down" in instance.latencies["slot:xray-b"]["error"]
+    assert instance.latencies[candidate.id]["error"] == "Outbound не прошёл проверку доступности"
+    assert instance.latencies["slot:xray-b"]["error"] == "Outbound не прошёл проверку доступности"
     assert instance.state["jobs"]["latency"]["progress"] == 2
 
 
@@ -426,6 +427,7 @@ def test_post_switch_watch_force_stops_degraded_rollback_after_recovery(
 
 def test_adaptive_drain_closes_stalled_connections_and_hard_stops(manager_factory, monkeypatch):
     instance = manager_factory()
+    instance.active_slot_tag = "xray-b"
     instance.switching_preset = "adaptive"
     instance.drain_poll_interval_seconds = 2
     instance.drain_quiet_seconds = 999
@@ -441,7 +443,7 @@ def test_adaptive_drain_closes_stalled_connections_and_hard_stops(manager_factor
     instance.stop_event = WaitSequence(False, True)
     instance.selector_connections = lambda: [connection]
     instance.local_tcp_connection_count = lambda _port: 1
-    monkeypatch.setattr("xray_proxy_manager_test_module.now_ts", lambda: 100)
+    monkeypatch.setattr("xpm.common.now_ts", lambda: 100)
     closed = []
     instance.close_slot_selector_connections = lambda tag, ids, reason: closed.append((tag, ids, reason)) or (1, 0)
     stopped = []

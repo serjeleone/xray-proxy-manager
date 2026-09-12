@@ -69,7 +69,7 @@ def test_download_subscription_falls_back_to_running_slots(m, manager_factory):
 
 def test_load_cached_subscription(m, manager_factory, isolated_paths, monkeypatch):
     instance = manager_factory()
-    monkeypatch.setattr(m, "SUBSCRIPTION_PATH", isolated_paths.SUBSCRIPTION_PATH)
+    monkeypatch.setattr(m.common, "SUBSCRIPTION_PATH", isolated_paths.SUBSCRIPTION_PATH)
     isolated_paths.SUBSCRIPTION_PATH.write_text(json.dumps({"a": 1}), encoding="utf-8")
     assert instance.load_cached_subscription() == [{"a": 1}]
     isolated_paths.SUBSCRIPTION_PATH.write_text(json.dumps([{"a": 1}, 2]), encoding="utf-8")
@@ -78,7 +78,7 @@ def test_load_cached_subscription(m, manager_factory, isolated_paths, monkeypatc
     assert instance.load_cached_subscription() == []
 
 
-def test_extract_candidates_filters_direct_and_preserves_duplicate_entries(m, manager_factory):
+def test_extract_candidates_filters_direct_and_deduplicates_identical_configs(m, manager_factory):
     instance = manager_factory()
     configs = [{
         "remarks": "🇫🇮 Profile",
@@ -89,12 +89,11 @@ def test_extract_candidates_filters_direct_and_preserves_duplicate_entries(m, ma
         ],
     }]
     candidates = instance.extract_candidates(configs)
-    assert len(candidates) == 2
+    assert len(candidates) == 1
     assert candidates[0].name == "🇫🇮 Profile — node"
     assert candidates[0].protocol == "VLESS"
     assert candidates[0].country_code == "FI"
-    assert candidates[0].id != candidates[1].id
-    assert candidates[0].fingerprint == candidates[1].fingerprint
+    assert candidates[0].config_revision
 
 
 def test_candidate_lookup_identity_and_latency(m, manager_factory, candidate_factory):
@@ -191,7 +190,10 @@ def test_build_config_selects_outbound_and_validates_indexes(m, manager_factory)
     config = instance.build_config(candidate, slot_tag="xray-a")
     assert config["routing"]["rules"][0]["outboundTag"] == "node"
     assert config["inbounds"][0]["port"] == 10808
-    bad_source = type(candidate)(**{**candidate.__dict__, "source_index": 9})
+    # A saved snapshot survives refreshes; only legacy candidates need indexes.
+    instance.subscription = []
+    assert instance.build_config(candidate, slot_tag="xray-a") == config
+    bad_source = type(candidate)(**{**candidate.__dict__, "source_index": 9, "config": None})
     with pytest.raises(ValueError, match="source config"):
         instance.build_config(bad_source, slot_tag="xray-a")
     bad_outbound = type(candidate)(**{**candidate.__dict__, "outbound_index": 9})
@@ -237,9 +239,9 @@ def test_prepare_slot_config_removes_invalid_temp(m, manager_factory, candidate_
 def test_save_active_clone_and_write_runtime_config(m, manager_factory, candidate_factory, isolated_paths, monkeypatch):
     instance = manager_factory()
     candidate = candidate_factory("active")
-    monkeypatch.setattr(m, "CONFIG_PATH", isolated_paths.CONFIG_PATH)
-    monkeypatch.setattr(m, "LAST_GOOD_CONFIG_PATH", isolated_paths.LAST_GOOD_CONFIG_PATH)
-    monkeypatch.setattr(m, "LAST_GOOD_META_PATH", isolated_paths.LAST_GOOD_META_PATH)
+    monkeypatch.setattr(m.common, "CONFIG_PATH", isolated_paths.CONFIG_PATH)
+    monkeypatch.setattr(m.common, "LAST_GOOD_CONFIG_PATH", isolated_paths.LAST_GOOD_CONFIG_PATH)
+    monkeypatch.setattr(m.common, "LAST_GOOD_META_PATH", isolated_paths.LAST_GOOD_META_PATH)
     source = instance.slots["xray-a"]
     source.config_path.write_text(json.dumps({"inbounds": [], "value": 1}), encoding="utf-8")
     source.candidate = candidate

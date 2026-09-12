@@ -409,7 +409,14 @@ input[type="number"]::-webkit-outer-spin-button {
   min-width: 82px; text-align: center; border-radius: 999px; padding: 7px 10px;
   font-size: .76rem; font-weight: 820; background: #2b2b2b; color: var(--muted); border: 1px solid var(--line);
 }
-.ping.ok { color: #65e994; background: rgba(30,215,96,.09); border-color: rgba(30,215,96,.22); }
+.ping.ok { --ping-tone: var(--spotify); color: #65e994; }
+.ping.suspect { --ping-tone: var(--amber); color: var(--amber); }
+.ping.ok, .ping.suspect {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--ping-tone) 14%, transparent),
+    color-mix(in srgb, var(--ping-tone) 6%, transparent));
+  border-color: color-mix(in srgb, var(--ping-tone) 22%, transparent);
+}
 .ping.bad { color: #ff98a2; background: rgba(241,94,108,.08); border-color: rgba(241,94,108,.2); }
 .ping.checking { color: var(--muted); background: #2b2b2b; border-color: var(--line); }
 .mini-button { min-height: 34px; padding: 0 11px; background: #303030; border: 1px solid var(--line); font-size: .75rem; }

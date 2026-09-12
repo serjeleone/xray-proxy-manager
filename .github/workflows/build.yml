@@ -1,8 +1,13 @@
 name: Release
 
-run-name: ${{ github.event.release.name || github.event.release.tag_name || format('Ручной запуск — {0}', github.ref_name) }}
+run-name: ${{ github.event.release.name || github.ref_name }}
 
 on:
+  push:
+    branches: [main, 'release/**']
+    tags: ['v*']
+  pull_request:
+    branches: [main]
   release:
     types:
       - published
@@ -65,20 +70,7 @@ jobs:
         env:
           PUBLISHED_TAG: ${{ github.event.release.tag_name }}
         run: |
-          version="$(
-            awk -F': *' \
-              '$1 == "version" {
-                gsub(/"/, "", $2)
-                print $2
-                exit
-              }' \
-              xray-proxy-manager/config.yaml
-          )"
-
-          if [[ -z "${version}" ]]; then
-            echo "Unable to read version from xray-proxy-manager/config.yaml" >&2
-            exit 1
-          fi
+          version="$(python scripts/check_version.py)"
 
           release_tag="v${version}"
 
@@ -123,13 +115,18 @@ jobs:
 
       - name: Validate Python
         run: |
-          python -m py_compile \
-            xray-proxy-manager/manager.py
+          python -m compileall -q xray-proxy-manager scripts
 
       - name: Validate JavaScript
         run: |
           node --check \
             xray-proxy-manager/web/app.js
+
+      - name: Install verified Xray for integration checks
+        shell: bash
+        run: |
+          bash xray-proxy-manager/download-xray.sh "$RUNNER_TEMP/xray" amd64
+          echo "XRAY_TEST_BINARY=$RUNNER_TEMP/xray/bin/xray" >> "$GITHUB_ENV"
 
       - name: Test backend and internal processes
         run: |
@@ -151,6 +148,7 @@ jobs:
       - name: Validate shell scripts
         run: |
           sh -n xray-proxy-manager/run.sh
+          bash -n xray-proxy-manager/download-xray.sh
 
       - name: Validate YAML and JSON
         run: |
@@ -169,37 +167,7 @@ jobs:
           PY
 
       - name: Validate release documentation
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          import yaml
-
-          config = yaml.safe_load(
-              Path("xray-proxy-manager/config.yaml").read_text()
-          )
-
-          version = str(config["version"])
-          release_tag = f"v{version}"
-
-          changelog = Path(
-              "xray-proxy-manager/CHANGELOG.md"
-          ).read_text()
-
-          docs = Path(
-              "xray-proxy-manager/DOCS.md"
-          ).read_text()
-
-          if f"## {release_tag}" not in changelog:
-              raise SystemExit(
-                  f"Missing changelog section {release_tag}"
-              )
-
-          if release_tag not in docs:
-              raise SystemExit(
-                  f"Missing release tag {release_tag} in DOCS.md"
-              )
-          PY
+        run: python scripts/check_version.py
 
       - name: Validate documented settings
         run: |
@@ -372,10 +340,10 @@ jobs:
         run: |
           grep -Fq \
             "WORKDIR = Path('/config')" \
-            xray-proxy-manager/manager.py
+            xray-proxy-manager/xpm/common.py
 
           ! grep -RIn \
-            --exclude='manager.py' \
+            --exclude='common.py' \
             --exclude='CHANGELOG.md' \
             '/config/xray-proxy-manager/' \
             xray-proxy-manager \
@@ -403,7 +371,7 @@ jobs:
     needs:
       - prepare
 
-    if: ${{ github.event_name == 'release' || inputs.publish == true }}
+    if: ${{ github.event_name == 'release' || (github.event_name == 'push' && github.ref_type == 'tag') || inputs.publish == true }}
 
     runs-on: ${{ matrix.os }}
 
@@ -456,7 +424,7 @@ jobs:
       - prepare
       - build
 
-    if: ${{ github.event_name == 'release' || inputs.publish == true }}
+    if: ${{ github.event_name == 'release' || (github.event_name == 'push' && github.ref_type == 'tag') || inputs.publish == true }}
 
     runs-on: ubuntu-latest
 
@@ -476,3 +444,42 @@ jobs:
             ${{ needs.prepare.outputs.release_tag }}
             ${{ needs.prepare.outputs.version }}
             latest
+
+  release:
+    name: Publish GitHub release
+    needs: [prepare, manifest]
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Prepare release notes
+        env:
+          RELEASE_SUBJECT: ${{ needs.prepare.outputs.commit_subject }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          python - <<'PYNOTES'
+          import os
+          from pathlib import Path
+
+          tag = os.environ['RELEASE_TAG']
+          changelog = Path('xray-proxy-manager/CHANGELOG.md').read_text()
+          section = changelog.split(f'## {tag}\n', 1)[1].split('\n## ', 1)[0].strip()
+          subject = os.environ['RELEASE_SUBJECT'].removeprefix(f'{tag} - ')
+          notes = f'# {subject} - {tag}\n\n{section}\n'
+          Path('release-notes.md').write_text(notes)
+          PYNOTES
+      - name: Publish release after container images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag \
+              --title "$RELEASE_TAG" --notes-file release-notes.md
+          fi

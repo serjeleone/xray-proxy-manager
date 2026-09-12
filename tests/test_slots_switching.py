@@ -20,7 +20,7 @@ def test_log_xray_output_tracks_observed_outbound_and_filters_observatory(m, man
     ))
     instance.log_xray_output("xray-a", process)
     assert instance.slots["xray-a"].observed_outbound_tag == "node-tag"
-    lines, _ = m.ui_log_snapshot(20)
+    lines, _ = m.common.ui_log_snapshot(20)
     assert any("Reading config: /config/a.json" in line for line in lines)
     assert not any("error ping ignored" in line for line in lines)
 
@@ -150,7 +150,7 @@ def test_probe_proxy_urls_success_and_failure(m, manager_factory):
     assert success and minimum == 40.0 and len(results) == 2 and error == ""
     instance.proxy_curl = lambda *a, **k: (False, None, "timeout")
     success, minimum, results, error = instance.probe_proxy_urls("127.0.0.1", 10808, 3, auth=True)
-    assert not success and minimum is None and results == [] and "timeout" in error
+    assert not success and minimum is None and results == [] and error == "Превышен тайм-аут проверки"
 
 
 def test_probe_slot_health_and_validate_slot(m, manager_factory):
@@ -216,7 +216,7 @@ def test_switch_request_log_includes_explicit_source(manager_factory, candidate_
     candidate = candidate_factory("finland")
     instance = manager_factory([candidate])
     dispatched = []
-    instance.start_initial_candidate = lambda item, reason, *, source="internal": dispatched.append(
+    instance.start_initial_candidate = lambda item, reason, *, source="internal", **kwargs: dispatched.append(
         (item.id, reason, source)
     )
 
@@ -321,5 +321,5 @@ def test_local_tcp_connection_count_reads_proc_tables(m, manager_factory, monkey
     class PathProxy(type(Path())):
         pass
     mapping = {"/proc/net/tcp": tcp, "/proc/net/tcp6": tcp6}
-    monkeypatch.setattr(m, "Path", lambda value: mapping.get(str(value), original(value)))
+    monkeypatch.setattr(m.drain, "Path", lambda value: mapping.get(str(value), original(value)))
     assert instance.local_tcp_connection_count(10808) == 2

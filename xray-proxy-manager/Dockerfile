@@ -1,11 +1,9 @@
-FROM ghcr.io/home-assistant/base:latest
+FROM ghcr.io/home-assistant/base:3.24-2026.08.0@sha256:93ef607824e3f27e868f11b10938283a98bf880ed57bcf8eaa81c6c2d521f6f5
 
 ARG BUILD_ARCH
 ARG TARGETARCH
 ARG TARGETVARIANT
-ARG XRAY_VERSION=v26.7.28
-ARG BUILD_VERSION="0.9.3"
-ARG RELEASE_TAG="v0.9.3"
+ARG BUILD_VERSION
 
 LABEL io.hass.version="${BUILD_VERSION}" \
       io.hass.type="app" \
@@ -18,10 +16,13 @@ LABEL io.hass.version="${BUILD_VERSION}" \
       org.opencontainers.image.source="https://github.com/serjeleone/xray-proxy-manager" \
       org.opencontainers.image.url="https://github.com/serjeleone/xray-proxy-manager" \
       org.opencontainers.image.documentation="https://github.com/serjeleone/xray-proxy-manager/blob/main/xray-proxy-manager/DOCS.md" \
-      org.opencontainers.image.version="${RELEASE_TAG}" \
+      org.opencontainers.image.version="v${BUILD_VERSION}" \
+      org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.authors="serjeleone"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+COPY download-xray.sh xray-release.conf /tmp/xray-install/
 
 RUN apk add --no-cache \
       bash \
@@ -32,23 +33,13 @@ RUN apk add --no-cache \
       sshpass \
       tzdata \
       unzip \
-    && set -eux; \
-    ARCH_KEY="${BUILD_ARCH:-${TARGETARCH}${TARGETVARIANT:-}}"; \
-    case "${ARCH_KEY}" in \
-      amd64|x86_64) XRAY_ARCH="64" ;; \
-      aarch64|arm64|arm64v8) XRAY_ARCH="arm64-v8a" ;; \
-      *) echo "Unsupported arch: ${ARCH_KEY}" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL -o /tmp/xray.zip \
-      "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip"; \
-    unzip /tmp/xray.zip -d /tmp/xray; \
-    install -m 0755 /tmp/xray/xray /usr/local/bin/xray; \
-    mkdir -p /usr/local/share/xray /config; \
-    if [ -f /tmp/xray/geoip.dat ]; then install -m 0644 /tmp/xray/geoip.dat /usr/local/share/xray/geoip.dat; fi; \
-    if [ -f /tmp/xray/geosite.dat ]; then install -m 0644 /tmp/xray/geosite.dat /usr/local/share/xray/geosite.dat; fi; \
-    rm -rf /tmp/xray /tmp/xray.zip
+    && bash /tmp/xray-install/download-xray.sh /usr/local "${BUILD_ARCH:-${TARGETARCH}${TARGETVARIANT:-}}" \
+    && mkdir -p /config \
+    && rm -rf /tmp/xray-install
 
 COPY manager.py /manager.py
+COPY xpm /xpm
+COPY VERSION /VERSION
 COPY CHANGELOG.md /CHANGELOG.md
 COPY web /web
 COPY run.sh /run.sh

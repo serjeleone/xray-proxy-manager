@@ -163,7 +163,7 @@ def test_convert_subscription_protocols_transports_tls_and_groups(m):
         ],
     }]
 
-    config, metadata = m.convert_xray_subscription_to_sing_box(
+    config, metadata = m.conversion.convert_xray_subscription_to_sing_box(
         source,
         test_url="https://probe.example/204",
         test_interval="10m",
@@ -261,7 +261,7 @@ def test_convert_subscription_protocols_transports_tls_and_groups(m):
         ],
     }
 
-    config, metadata = m.convert_xray_subscription_to_sing_box(source)
+    config, metadata = m.conversion.convert_xray_subscription_to_sing_box(source)
     node = config["outbounds"][0]
     assert metadata["converted_count"] == 1
     assert node["tag"] == "1 - Fallback profile"
@@ -289,7 +289,7 @@ def test_convert_subscription_protocols_transports_tls_and_groups(m):
         ],
     }]
 
-    config, metadata = m.convert_xray_subscription_to_sing_box(source)
+    config, metadata = m.conversion.convert_xray_subscription_to_sing_box(source)
     assert metadata["converted_count"] == 1
     assert config["outbounds"][0]["type"] == "socks"
     assert [item["reason"] for item in metadata["skipped"]] == [
@@ -303,7 +303,7 @@ def test_convert_subscription_protocols_transports_tls_and_groups(m):
 def test_convert_subscription_rejects_invalid_sources_and_reports_error_details(m):
     for source in (None, "not-json-object", {"outbounds": []}):
         with pytest.raises(ValueError, match="No supported proxy outbounds could be converted."):
-            m.convert_xray_subscription_to_sing_box(source)
+            m.conversion.convert_xray_subscription_to_sing_box(source)
 
     source = {
         "remarks": "Only bad",
@@ -315,7 +315,7 @@ def test_convert_subscription_rejects_invalid_sources_and_reports_error_details(
         ],
     }
     with pytest.raises(ValueError) as error:
-        m.convert_xray_subscription_to_sing_box(source)
+        m.conversion.convert_xray_subscription_to_sing_box(source)
     message = str(error.value)
     assert "broken [vless]" in message
     assert "required endpoint or credential field is missing" in message
@@ -335,7 +335,7 @@ def test_manager_sing_box_subscription_uses_current_then_cached_subscription(m, 
     }
     instance.subscription = [source]
     messages = []
-    monkeypatch.setattr(m, "log", lambda message, **_kwargs: messages.append(message))
+    monkeypatch.setattr(m.common, "log", lambda message, **_kwargs: messages.append(message))
 
     config, metadata = instance.sing_box_subscription()
     assert config["outbounds"][-4]["url"] == instance.primary_test_url

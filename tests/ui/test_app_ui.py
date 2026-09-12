@@ -3,12 +3,14 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Callable
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 from playwright.sync_api import Page, Route, expect
 
 pytestmark = pytest.mark.ui
+VERSION = (Path(__file__).parents[2] / "xray-proxy-manager" / "VERSION").read_text().strip()
 
 
 def candidate(
@@ -63,8 +65,8 @@ def base_payload() -> dict:
         ),
     ]
     return {
-        "version": "0.9.3",
-        "xray_version": "Xray 26.7.28",
+        "version": VERSION,
+        "xray_version": "Xray test core",
         "xray_running": True,
         "home_assistant_host": "192.0.2.250",
         "active": {
@@ -119,7 +121,7 @@ def base_payload() -> dict:
             "refresh": {"running": False, "message": ""},
             "switch": {"running": False, "message": ""},
         },
-        "release_notes": {"version": "0.9.3", "items": ["Тестовая версия"]},
+        "release_notes": {"version": VERSION, "items": ["Тестовая версия"]},
     }
 
 
@@ -183,7 +185,7 @@ def open_app(page: Page, web_app_html: str, payload: dict | None = None) -> ApiH
     harness = ApiHarness(copy.deepcopy(payload or base_payload()))
     page.route("**/api/**", harness.handler)
     page.set_content(web_app_html, wait_until="networkidle")
-    expect(page.locator("#versionBadge")).to_have_text("v0.9.3")
+    expect(page.locator("#versionBadge")).to_have_text(f"v{VERSION}")
     return harness
 
 
@@ -264,6 +266,65 @@ def test_traffic_and_slot_mode_controls_send_explicit_desired_state(page: Page, 
         {"method": "POST", "path": "/api/traffic", "body": {"enabled": False}},
         {"method": "POST", "path": "/api/mode", "body": {"dual_slot_enabled": False}},
     ]
+
+
+def test_repeated_mode_changes_follow_confirmed_server_state(page: Page, web_app_html: str) -> None:
+    harness = open_app(page, web_app_html)
+    def mode(body):
+        enabled = body['dual_slot_enabled']
+        harness.payload['blue_green'].update(dual_slot_enabled=enabled, mode='dual' if enabled else 'single')
+        return {'ok': True, 'dual_slot_enabled': enabled}
+    harness.responses['/api/mode'] = mode
+    page.on('dialog', lambda dialog: dialog.accept())
+    for index, enabled in enumerate((False, True, False, True), 1):
+        page.locator('#slotModeButton').click()
+        expect(page.locator('#xrayState')).to_contain_text('Двухслотовый' if enabled else 'Однослотовый')
+        wait_for_requests(page, harness, index)
+        assert harness.requests[-1]['body'] == {'dual_slot_enabled': enabled}
+
+
+def test_manual_selection_during_full_scan_refreshes_rejected_candidate(page: Page, web_app_html: str) -> None:
+    payload = base_payload()
+    payload['jobs']['latency'].update(running=True, progress=1, total=4)
+    harness = open_app(page, web_app_html, payload)
+    def reject(route):
+        harness.payload['candidates'][2]['latency'] = {
+            'status': 'error', 'latency_ms': None, 'error': 'Превышен тайм-аут проверки',
+        }
+        route.fulfill(status=400, json={'error': 'Превышен тайм-аут проверки'}, headers=harness.cors_headers)
+    page.route('**/api/select', reject)
+    expect(page.locator('[data-select="vless-id"]')).to_be_enabled()
+    page.locator('[data-select="vless-id"]').click()
+    card = page.locator('.outbound-card').filter(has_text='Regular VLESS')
+    expect(card.locator('.ping')).to_have_text('недоступен')
+    expect(page.locator('#toast')).to_have_text('Ошибка: Превышен тайм-аут проверки')
+    assert harness.payload['jobs']['latency']['running'] is True
+
+
+@pytest.mark.parametrize('sort, yellow_names', [
+    ('ping-asc', ['Yellow Z', 'Yellow A']), ('ping-desc', ['Yellow A', 'Yellow Z']),
+    ('name-asc', ['Yellow A', 'Yellow Z']), ('name-desc', ['Yellow Z', 'Yellow A']),
+    ('protocol-asc', ['Yellow Z', 'Yellow A']), ('protocol-desc', ['Yellow A', 'Yellow Z']),
+])
+def test_yellow_candidates_follow_green_group_and_selected_sort(page: Page, web_app_html: str, sort, yellow_names):
+    payload = base_payload()
+    payload['candidates'] = [payload['candidates'][0], payload['candidates'][2]]
+    for name, protocol, ping in [('Yellow Z', 'TROJAN', 1), ('Yellow A', 'VLESS', 50)]:
+        item = candidate(name, name, protocol, latency={'status': 'ok', 'latency_ms': ping})
+        item['suspect'] = True
+        if name == 'Yellow Z':
+            item.update(slot_tags=['xray-a'], draining_slots=['xray-a'])
+        payload['candidates'].append(item)
+    payload['ui_settings']['sort'] = sort
+    open_app(page, web_app_html, payload)
+    assert card_names(page) == ['Active Finland', 'Regular VLESS', *yellow_names]
+    yellow = page.locator('.ping.suspect')
+    expect(yellow).to_have_count(2)
+    assert yellow.first.evaluate("element => getComputedStyle(element).color") == page.locator('#throughputBadge').evaluate("element => getComputedStyle(element).backgroundColor")
+    styles = yellow.first.evaluate("element => { const s = getComputedStyle(element); return [s.backgroundImage, s.borderTopColor]; }")
+    green_styles = page.locator('.ping.ok').first.evaluate("element => { const s = getComputedStyle(element); return [s.backgroundImage, s.borderTopColor]; }")
+    assert 'linear-gradient' in styles[0] and 'linear-gradient' in green_styles[0]
+    assert all(yellow_value != green_value for yellow_value, green_value in zip(styles, green_styles))
 
 
 def test_auto_checker_save_separates_runtime_settings_and_preferences(page: Page, web_app_html: str) -> None:

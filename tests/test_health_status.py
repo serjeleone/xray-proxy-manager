@@ -15,9 +15,9 @@ from conftest import DummyProcess
 def test_last_good_resolution_and_restore(m, manager_factory, candidate_factory, isolated_paths, monkeypatch):
     first = candidate_factory("first", fingerprint="fp", outbound_tag="tag")
     instance = manager_factory([first])
-    monkeypatch.setattr(m, "LAST_GOOD_META_PATH", isolated_paths.LAST_GOOD_META_PATH)
-    monkeypatch.setattr(m, "LAST_GOOD_CONFIG_PATH", isolated_paths.LAST_GOOD_CONFIG_PATH)
-    monkeypatch.setattr(m, "CONFIG_PATH", isolated_paths.CONFIG_PATH)
+    monkeypatch.setattr(m.common, "LAST_GOOD_META_PATH", isolated_paths.LAST_GOOD_META_PATH)
+    monkeypatch.setattr(m.common, "LAST_GOOD_CONFIG_PATH", isolated_paths.LAST_GOOD_CONFIG_PATH)
+    monkeypatch.setattr(m.common, "CONFIG_PATH", isolated_paths.CONFIG_PATH)
     isolated_paths.LAST_GOOD_META_PATH.write_text(json.dumps({"fingerprint": "fp", "slot_tag": "xray-b"}))
     isolated_paths.LAST_GOOD_CONFIG_PATH.write_text(json.dumps({"routing": {"rules": [{"outboundTag": "tag"}]}}))
     assert instance.resolve_last_good_candidate() is first
@@ -31,8 +31,8 @@ def test_last_good_resolution_and_restore(m, manager_factory, candidate_factory,
 
 def test_restore_last_good_missing_or_invalid(m, manager_factory, isolated_paths, monkeypatch):
     instance = manager_factory()
-    monkeypatch.setattr(m, "LAST_GOOD_META_PATH", isolated_paths.LAST_GOOD_META_PATH)
-    monkeypatch.setattr(m, "LAST_GOOD_CONFIG_PATH", isolated_paths.LAST_GOOD_CONFIG_PATH)
+    monkeypatch.setattr(m.common, "LAST_GOOD_META_PATH", isolated_paths.LAST_GOOD_META_PATH)
+    monkeypatch.setattr(m.common, "LAST_GOOD_CONFIG_PATH", isolated_paths.LAST_GOOD_CONFIG_PATH)
     assert instance.restore_last_good() == (False, None)
     isolated_paths.LAST_GOOD_CONFIG_PATH.write_text("{}")
     assert instance.restore_last_good() == (False, None)
@@ -52,7 +52,7 @@ def test_refresh_subscription_preserves_running_removed_candidate(m, manager_fac
     instance.extract_candidates = lambda configs: [new]
     instance.rebind_slot_candidates = lambda: False
     instance.runtime_config_differs = lambda *a: False
-    monkeypatch.setattr(m, "SUBSCRIPTION_PATH", isolated_paths.SUBSCRIPTION_PATH)
+    monkeypatch.setattr(m.common, "SUBSCRIPTION_PATH", isolated_paths.SUBSCRIPTION_PATH)
     instance.refresh_subscription_sync(initial=False)
     assert instance.active_candidate_id == old.id
     assert slot.candidate is old
@@ -90,9 +90,9 @@ def test_refresh_job_and_request_refresh(m, manager_factory, monkeypatch):
 def test_port_reservation_parallelism_wait_and_proxy_curl(m, manager_factory, monkeypatch):
     instance = manager_factory()
     port = instance.find_free_port()
-    assert port in m.RESERVED_TEST_PORTS
+    assert port in m.common.RESERVED_TEST_PORTS
     instance.release_test_port(port)
-    assert port not in m.RESERVED_TEST_PORTS
+    assert port not in m.common.RESERVED_TEST_PORTS
     instance.latency_test_parallelism = 3
     assert instance.effective_latency_test_parallelism(0) == 1
     assert instance.effective_latency_test_parallelism(2) == 2
@@ -268,7 +268,7 @@ def test_effective_active_candidate_and_status_payload_keep_running_removed_outb
     assert active_card["slot_tags"] == ["xray-a"]
     assert any(item["id"] == current.id for item in payload["candidates"])
     assert payload["blue_green"]["active_slot"] == "xray-a"
-    assert payload["release_notes"]["version"] == "v0.9.3"
+    assert payload["release_notes"]["version"] == f"v{m.common.ADDON_VERSION}"
     assert payload["auto_checker"]["last_switch_source"] == "manual_ui"
 
 

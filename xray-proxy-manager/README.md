@@ -1,6 +1,6 @@
 # Xray Proxy Manager
 
-[![Release](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/build.yml/badge.svg?event=release)](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/build.yml?query=event%3Arelease)
+[![Release](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/build.yml/badge.svg)](https://github.com/serjeleone/xray-proxy-manager/actions/workflows/build.yml)
 [![Добавить репозиторий в Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fserjeleone%2Fxray-proxy-manager)
 
 Xray Proxy Manager — приложение Home Assistant для работы с подписками в формате Xray JSON. Такая подписка содержит одну или несколько конфигураций Xray с outbound, правилами маршрутизации и сопутствующими параметрами. Приложение разбирает эту структуру, выделяет доступные outbound, проверяет их и формирует управляемые конфигурации для переключения прокси. Поддерживаются двухслотовая схема с сохранением уже установленных соединений и однослотовая схема с перезапуском Xray при смене outbound.
@@ -79,7 +79,7 @@ ui_hide_excluded: true
 
 В `auto_switch_excluded` можно совместить точные двухбуквенные коды стран и текстовые фрагменты. Например, `RU, Определенный_сервер` исключает страну RU и любой outbound, в имени или технических полях которого встречается фрагмент `Определенный_сервер`. Фильтр интерфейса `ui_hide_excluded` включён по умолчанию и скрывает такие outbound из списка.
 
-`auto_switch_preferred_country` задаёт ISO-код страны с приоритетом. При выборе страны в UI уже известный подходящий outbound этой страны сразу проходит пред-switch проверку и активируется, после чего выполняется полная проверка. Если хотя бы один outbound этой страны доступен, не исключён и укладывается в `auto_check_max_latency_ms`, лучший выбирается среди них. Иначе выбор выполняется среди всех подходящих outbound.
+`auto_switch_preferred_country` задаёт ISO-код страны с приоритетом. При включённом автопереключении после выбора страны в UI уже известный подходящий outbound этой страны сразу проходит пред-switch проверку и активируется, после чего выполняется полная проверка. Если хотя бы один outbound этой страны доступен, не исключён и укладывается в `auto_check_max_latency_ms`, лучший выбирается среди них. Иначе выбор выполняется среди всех подходящих outbound.
 
 `auto_switch_preferred_protocol` задаёт протокол с приоритетом. В UI список протоколов формируется из уникальных значений текущей подписки. При одновременном выборе страны и протокола выше ранжируются outbound, совпадающие с обоими условиями.
 
@@ -91,4 +91,4 @@ ui_hide_excluded: true
 
 ## Версия
 
-Текущая версия приложения: `0.9.3`.
+Текущая версия приложения указана в [VERSION](VERSION).

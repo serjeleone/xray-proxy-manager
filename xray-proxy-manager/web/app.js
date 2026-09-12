@@ -25,6 +25,9 @@ const state = {
   changelogOpen: false,
   releaseNotes: [],
   throughputFetchInFlight: false,
+  switchInFlight: false,
+  modeInFlight: false,
+  statusRequest: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -330,8 +333,13 @@ function sortedAndFilteredCandidates(items, payload) {
   const [field, direction] = settings.sort.split('-');
   const factor = direction === 'desc' ? -1 : 1;
   filtered.sort((a, b) => {
-    const pinDifference = candidatePinPriority(a) - candidatePinPriority(b);
+    const pin = (item) => item.suspect && !item.active ? 3 : candidatePinPriority(item);
+    const pinDifference = pin(a) - pin(b);
     if (pinDifference !== 0) return pinDifference;
+    const group = (item) => item.latency?.status === 'ok'
+      ? (item.suspect ? 1 : 0) : (item.latency?.status === 'error' ? 3 : 2);
+    const groupDifference = group(a) - group(b);
+    if (groupDifference !== 0) return groupDifference;
     if (field === 'ping') {
       const av = latencyRank(a); const bv = latencyRank(b);
       const aMissing = !Number.isFinite(av); const bMissing = !Number.isFinite(bv);
@@ -352,7 +360,8 @@ function pingMarkup(item) {
   const latency = item.latency;
   if (!latency) return '<span class="ping">не проверен</span>';
   if (latency.status === 'ok') {
-    return `<span class="ping ok" title="${escapeHtml(formatDateTime(latency.checked_at))}">${latency.latency_ms} мс</span>`;
+    const hint = item.suspect ? 'Ранее отключён вручную · ' : '';
+    return `<span class="ping ${item.suspect ? 'suspect' : 'ok'}" title="${escapeHtml(hint + formatDateTime(latency.checked_at))}">${latency.latency_ms} мс</span>`;
   }
   return `<span class="ping bad" title="${escapeHtml(latency.error || 'Ошибка')}">недоступен</span>`;
 }
@@ -391,6 +400,7 @@ function renderCandidates(payload) {
   const operationRunning = Boolean(
     payload.jobs?.latency?.running || payload.jobs?.refresh?.running || payload.jobs?.switch?.running
   );
+  const switching = Boolean(payload.jobs?.switch?.running || state.switchInFlight || state.modeInFlight);
   $('outboundList').innerHTML = items.map((item) => {
     const runtime = candidateRuntimeState(item);
     const slotTags = runtime.slotTags;
@@ -418,7 +428,7 @@ function renderCandidates(payload) {
         ${drainingSlot ? `<button class="mini-button danger" data-stop-slot="${escapeHtml(drainingSlot)}">Стоп</button>` : ''}
         ${pingMarkup(item)}
         <button class="mini-button" data-test="${escapeHtml(item.id)}" ${operationRunning ? 'disabled' : ''}>Тест</button>
-        <button class="mini-button select" data-select="${escapeHtml(item.id)}" ${runtime.active || operationRunning ? 'disabled' : ''}>Выбрать</button>
+        <button class="mini-button select" data-select="${escapeHtml(item.id)}" ${(runtime.active && !item.config_changed) || switching ? 'disabled' : ''}>${item.config_changed ? 'Применить' : 'Выбрать'}</button>
       </div>
     </article>`;
   }).join('');
@@ -642,7 +652,7 @@ function render(payload) {
   const running = Boolean(latencyJob.running || refreshJob.running || switchJob.running);
   $('testAllButton').disabled = running;
   $('refreshButton').disabled = running;
-  $('slotModeButton').disabled = running;
+  $('slotModeButton').disabled = Boolean(switchJob.running || state.switchInFlight || state.modeInFlight);
   $('slotModeButton').textContent = blueGreen.dual_slot_enabled ? 'Режим: 2 слота' : 'Режим: 1 слот';
   if (running) {
     $('jobBanner').classList.remove('hidden');
@@ -919,10 +929,13 @@ async function fetchStatus(force = false) {
     state.statusRefreshDeferred = true;
     return;
   }
+  const request = ++state.statusRequest;
   try {
     const response = await fetch(api('api/status'), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    render(await response.json());
+    const payload = await response.json();
+    if (request !== state.statusRequest) return;
+    render(payload);
     state.statusRefreshDeferred = false;
   } catch (error) {
     $('statusDot').className = 'status-dot bad';
@@ -1045,12 +1058,18 @@ function downloadLogs() {
 }
 
 async function selectCandidate(id) {
+  if (state.switchInFlight || state.modeInFlight) return;
+  state.switchInFlight = true;
+  if (state.payload) renderCandidates(state.payload);
   try {
     toast('Переключение outbound…');
     await post('api/select', { id });
     toast('Outbound переключён');
-    await fetchStatus();
   } catch (error) { toast(`Ошибка: ${error.message}`, true); }
+  finally {
+    state.switchInFlight = false;
+    await fetchStatus(true);
+  }
 }
 
 async function testCandidates(id = '') {
@@ -1102,19 +1121,22 @@ async function convertSubscription() {
 }
 
 async function toggleSlotMode() {
+  if (state.modeInFlight || state.switchInFlight) return;
   const dualEnabled = Boolean(state.payload?.blue_green?.dual_slot_enabled);
   const desired = !dualEnabled;
   const label = desired ? 'двухслотовый' : 'однослотовый';
   if (!window.confirm(`Переключить Xray в ${label} режим? Все процессы Xray будут перезапущены.`)) return;
+  state.modeInFlight = true;
   try {
     $('slotModeButton').disabled = true;
     toast(`Переключение в ${label} режим…`);
     await post('api/mode', { dual_slot_enabled: desired });
     toast(`Включён ${label} режим`);
-    await fetchStatus();
   } catch (error) {
     toast(`Ошибка смены режима: ${error.message}`, true);
-    await fetchStatus();
+  } finally {
+    state.modeInFlight = false;
+    await fetchStatus(true);
   }
 }
 

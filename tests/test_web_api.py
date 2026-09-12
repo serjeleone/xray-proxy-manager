@@ -32,8 +32,8 @@ class FakeManager:
 @pytest.fixture
 def web_server(m, isolated_paths, monkeypatch):
     manager = FakeManager()
-    handler = lambda *args, **kwargs: m.WebHandler(manager, *args, **kwargs)
-    server = m.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    handler = lambda *args, **kwargs: m.web.WebHandler(manager, *args, **kwargs)
+    server = m.web.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
@@ -67,7 +67,7 @@ def test_health_status_logs_and_static_routes(m, web_server):
     assert status == 200 and payload == {"ok": True, "xray_running": True}
     status, payload = get_json(f"{base}/api/status")
     assert payload["value"] == 1
-    m.append_ui_log("one")
+    m.common.append_ui_log("one")
     status, payload = get_json(f"{base}/api/logs?limit=1")
     assert payload["lines"] == ["one"]
     with urllib.request.urlopen(f"{base}/app.js") as response:
@@ -136,7 +136,7 @@ def test_traffic_route_toggles_known_state_when_value_missing(web_server):
 
 
 def test_web_handler_ingress_allowlist_and_json_helpers(m):
-    handler = m.WebHandler.__new__(m.WebHandler)
+    handler = m.web.WebHandler.__new__(m.web.WebHandler)
     handler.client_address = ("::ffff:127.0.0.1", 1234)
     assert handler.ingress_client_allowed()
     handler.client_address = ("192.168.1.2", 1234)
@@ -147,7 +147,7 @@ def test_ingress_forward_stream_and_proxy_server_configuration(m):
     left, right = socket.socketpair()
     target_left, target_right = socket.socketpair()
     try:
-        handler = m.IngressTCPProxyHandler.__new__(m.IngressTCPProxyHandler)
+        handler = m.web.IngressTCPProxyHandler.__new__(m.web.IngressTCPProxyHandler)
         right.sendall(b"payload")
         right.shutdown(socket.SHUT_WR)
         handler.forward_stream(left, target_left)
@@ -155,7 +155,7 @@ def test_ingress_forward_stream_and_proxy_server_configuration(m):
     finally:
         for sock in (left, right, target_left, target_right):
             sock.close()
-    server = m.ThreadingTCPProxyServer(("127.0.0.1", 0), target_host="127.0.0.1", target_port=8090)
+    server = m.web.ThreadingTCPProxyServer(("127.0.0.1", 0), target_host="127.0.0.1", target_port=8090)
     try:
         assert server.target_host == "127.0.0.1"
         assert server.target_port == 8090
@@ -170,7 +170,7 @@ def test_ingress_proxy_handler_relays_both_directions(m, monkeypatch):
         sock.settimeout(2)
 
     monkeypatch.setattr(m.socket, "create_connection", lambda *_args, **_kwargs: upstream)
-    handler = m.IngressTCPProxyHandler.__new__(m.IngressTCPProxyHandler)
+    handler = m.web.IngressTCPProxyHandler.__new__(m.web.IngressTCPProxyHandler)
     handler.server = SimpleNamespace(target_host="127.0.0.1", target_port=8090)
     handler.request = client
     worker = threading.Thread(target=handler.handle)

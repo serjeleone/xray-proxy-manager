@@ -36,6 +36,20 @@ def test_manager_initialization_loads_runtime_options_and_state(m, isolated_path
     assert instance.state["jobs"]["latency"]["running"] is False
 
 
+def test_home_assistant_edit_overrides_older_ui_setting_after_restart(m, isolated_paths, write_options, monkeypatch):
+    write_options(auto_switch_best_enabled=False)
+    isolated_paths.RUNTIME_OPTIONS_PATH.write_text(json.dumps({
+        'auto_switch_best_enabled': True,
+        '_base_options': {'auto_switch_best_enabled': True},
+    }))
+    monkeypatch.setattr(m.XrayManager, 'prepare_router_auth', lambda self: None)
+    monkeypatch.setattr(m.XrayManager, 'detect_home_assistant_host', lambda self: 'ha.local')
+    monkeypatch.setattr(m.XrayManager, 'sync_supervisor_options', lambda self: (False, 'offline'))
+    instance = m.XrayManager()
+    assert instance.auto_switch_best_enabled is False
+    assert instance.emergency_failover(3) is None
+
+
 @pytest.mark.parametrize(
     "overrides, message",
     [
@@ -140,8 +154,8 @@ def test_validate_runtime_changes_rejects_invalid_input(m, manager_factory, chan
 
 def test_update_runtime_settings_persists_and_signals(m, manager_factory, isolated_paths, monkeypatch):
     instance = manager_factory()
-    monkeypatch.setattr(m, "RUNTIME_OPTIONS_PATH", isolated_paths.RUNTIME_OPTIONS_PATH)
-    monkeypatch.setattr(m, "now_ts", lambda: 1000.0)
+    monkeypatch.setattr(m.common, "RUNTIME_OPTIONS_PATH", isolated_paths.RUNTIME_OPTIONS_PATH)
+    monkeypatch.setattr(m.common, "now_ts", lambda: 1000.0)
     result = instance.update_runtime_settings({
         "ui_sort": "name-desc",
         "auto_check_failures": 7,
@@ -251,7 +265,7 @@ def test_set_slot_mode_noop_success_and_rollback(m, manager_factory, candidate_f
     instance.slots["xray-a"].candidate = candidate
     assert instance.set_slot_mode(True) == {"ok": True, "dual_slot_enabled": True, "changed": False}
 
-    monkeypatch.setattr(m, "RUNTIME_OPTIONS_PATH", isolated_paths.RUNTIME_OPTIONS_PATH)
+    monkeypatch.setattr(m.common, "RUNTIME_OPTIONS_PATH", isolated_paths.RUNTIME_OPTIONS_PATH)
     stopped = []
     started = []
     instance.stop_xray = lambda: stopped.append(instance.dual_slot_enabled)

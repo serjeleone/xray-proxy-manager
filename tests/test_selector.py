@@ -95,28 +95,15 @@ def test_connection_helpers(m, manager_factory):
     assert "bytes=3" in summary
 
 
-def test_active_throughput_counts_download_only(m, manager_factory):
+def test_active_throughput_handles_core_counter_resets(manager_factory):
     instance = manager_factory()
-    first_connections = [
-        {"id": "1", "chains": ["xray-a"], "upload": 1_000, "download": 1_000_000},
-        {"id": "2", "chains": ["xray-a"], "upload": 2_000, "download": 500_000},
-        {"id": "3", "chains": ["xray-b"], "upload": 9_000_000, "download": 9_000_000},
-    ]
-    first = instance.update_active_throughput("xray-a", first_connections, sampled_at=10.0)
+    first = instance.update_active_throughput("xray-a", 1_500_000, sampled_at=10.0)
     assert first["bytes_per_second"] == 0
-
-    second_connections = [
-        # Upload grows dramatically, but it must not affect the displayed inbound speed.
-        {"id": "1", "chains": ["xray-a"], "upload": 900_000_000, "download": 2_000_000},
-        {"id": "2", "chains": ["xray-a"], "upload": 700_000_000, "download": 1_000_000},
-        {"id": "4", "chains": ["xray-a"], "upload": 600_000_000, "download": 500_000},
-    ]
-    second = instance.update_active_throughput("xray-a", second_connections, sampled_at=11.0)
-    assert second["bytes_per_second"] == 2_000_000
+    second = instance.update_active_throughput("xray-a", 3_500_000, sampled_at=11.0)
     assert second["megabytes_per_second"] == pytest.approx(2.0)
-
-    # A slot change starts a fresh sample instead of mixing counters from two slots.
-    switched = instance.update_active_throughput("xray-b", first_connections, sampled_at=12.0)
+    reset = instance.update_active_throughput("xray-a", 100, sampled_at=12.0)
+    assert reset["bytes_per_second"] == 0
+    switched = instance.update_active_throughput("xray-b", 9_000_000, sampled_at=13.0)
     assert switched["bytes_per_second"] == 0
 
 
@@ -182,7 +169,7 @@ def test_refresh_selector_status_disabled_unavailable_and_available(m, manager_f
     instance.selector_status = lambda: "xray-a"
     instance.selector_connections = lambda: []
     instance.reconcile_startup_selector = lambda current: None
-    instance.restore_selector_alignment = lambda current: None
+    instance.restore_selector_alignment = lambda current, **kwargs: None
     instance.refresh_selector_status()
     assert instance.selector_state["available"] is True
     assert instance.selector_state["current"] == "xray-a"
