@@ -327,6 +327,48 @@ def test_yellow_candidates_follow_green_group_and_selected_sort(page: Page, web_
     assert all(yellow_value != green_value for yellow_value, green_value in zip(styles, green_styles))
 
 
+def test_selected_suspect_outbound_is_green(page: Page, web_app_html: str):
+    payload = base_payload()
+    payload['candidates'][0]['suspect'] = True  # Old persisted status after an upgrade.
+    open_app(page, web_app_html, payload)
+    active = page.locator('.outbound-card').filter(has_text='Active Finland')
+    expect(active.locator('.ping.ok')).to_have_text('82 мс')
+    expect(active.locator('.ping.suspect')).to_have_count(0)
+
+
+def test_throughput_badge_updates_and_displays_small_transfers(page: Page, web_app_html: str):
+    harness = open_app(page, web_app_html)
+    badge = page.locator('#throughputValue')
+    expect(badge).to_have_text('15.4 МБ/с')
+    for speed, expected in [(2.3, '2.3 МБ/с'), (0.012, '0.012 МБ/с'), (0, '0.0 МБ/с')]:
+        harness.throughput['megabytes_per_second'] = speed
+        expect(badge).to_have_text(expected)
+    harness.throughput.update(available=False, error='Статистика Xray временно недоступна')
+    expect(badge).to_have_text('— МБ/с')
+    expect(page.locator('#throughputBadge')).to_have_attribute('title', 'Статистика Xray временно недоступна')
+    harness.throughput.update(available=True, megabytes_per_second=4.5, error='')
+    expect(badge).to_have_text('4.5 МБ/с')
+
+
+def test_throughput_poll_recovers_from_a_stalled_request(page: Page, web_app_html: str):
+    # Simulate a request left pending after the HA Ingress connection drops.
+    script = """<script>
+      const originalFetch = window.fetch.bind(window);
+      let stallThroughput = true;
+      window.fetch = (url, options = {}) => {
+        if (String(url).endsWith('/api/throughput') && stallThroughput) {
+          stallThroughput = false;
+          return new Promise((resolve, reject) => {
+            options.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')));
+          });
+        }
+        return originalFetch(url, options);
+      };
+    </script>"""
+    open_app(page, web_app_html.replace('<head>', '<head>' + script))
+    expect(page.locator('#throughputValue')).to_have_text('15.4 МБ/с', timeout=10000)
+
+
 def test_auto_checker_save_separates_runtime_settings_and_preferences(page: Page, web_app_html: str) -> None:
     harness = open_app(page, web_app_html)
 

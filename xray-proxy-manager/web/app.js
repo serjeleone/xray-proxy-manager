@@ -360,8 +360,9 @@ function pingMarkup(item) {
   const latency = item.latency;
   if (!latency) return '<span class="ping">не проверен</span>';
   if (latency.status === 'ok') {
-    const hint = item.suspect ? 'Ранее отключён вручную · ' : '';
-    return `<span class="ping ${item.suspect ? 'suspect' : 'ok'}" title="${escapeHtml(hint + formatDateTime(latency.checked_at))}">${latency.latency_ms} мс</span>`;
+    const suspect = item.suspect && !item.active;
+    const hint = suspect ? 'Ранее отключён вручную · ' : '';
+    return `<span class="ping ${suspect ? 'suspect' : 'ok'}" title="${escapeHtml(hint + formatDateTime(latency.checked_at))}">${latency.latency_ms} мс</span>`;
   }
   return `<span class="ping bad" title="${escapeHtml(latency.error || 'Ошибка')}">недоступен</span>`;
 }
@@ -947,15 +948,16 @@ async function fetchStatus(force = false) {
 function formatThroughput(value) {
   const numeric = Number(value);
   const safe = Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
-  return `${safe.toFixed(1)} МБ/с`;
+  if (safe > 0 && safe < 0.001) return '<0.001 МБ/с';
+  return `${safe.toFixed(safe > 0 && safe < 1 ? 3 : 1)} МБ/с`;
 }
 
 function renderThroughput(payload) {
   const badge = $('throughputBadge');
   const valueNode = $('throughputValue');
   if (!badge || !valueNode) return;
-  const value = payload?.available ? payload.megabytes_per_second : 0;
-  valueNode.textContent = formatThroughput(value);
+  valueNode.textContent = payload?.available
+    ? formatThroughput(payload.megabytes_per_second) : '— МБ/с';
   const slot = payload?.slot || state.payload?.blue_green?.active_slot || '—';
   badge.title = payload?.available
     ? `Входящая скорость активного слота [${slot}]`
@@ -965,13 +967,16 @@ function renderThroughput(payload) {
 async function fetchThroughput() {
   if (state.throughputFetchInFlight) return;
   state.throughputFetchInFlight = true;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(api('api/throughput'), { cache: 'no-store' });
+    const response = await fetch(api('api/throughput'), { cache: 'no-store', signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     renderThroughput(await response.json());
   } catch (_error) {
     renderThroughput({ available: false });
   } finally {
+    window.clearTimeout(timeout);
     state.throughputFetchInFlight = false;
   }
 }

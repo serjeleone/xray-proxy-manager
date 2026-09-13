@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 import threading
 from pathlib import Path
 
@@ -48,6 +49,126 @@ def test_home_assistant_edit_overrides_older_ui_setting_after_restart(m, isolate
     instance = m.XrayManager()
     assert instance.auto_switch_best_enabled is False
     assert instance.emergency_failover(3) is None
+
+
+def test_bulk_configuration_save_overrides_legacy_ui_values(m, isolated_paths, write_options, monkeypatch):
+    saved = {
+        'auto_switch_best_enabled': False, 'auto_check_failures': 7,
+        'auto_switch_preferred_country': 'DE', 'update_interval_hours': 2,
+        'ui_sort': 'name-desc', 'dual_slot_enabled': False,
+        'log_level': 'debug', 'latency_test_parallelism': -1,
+    }
+    write_options(**saved)
+    isolated_paths.RUNTIME_OPTIONS_PATH.write_text(json.dumps({
+        'auto_switch_best_enabled': True, 'auto_check_failures': 3,
+        'auto_switch_preferred_country': 'NL', 'update_interval_hours': 1,
+        'ui_sort': 'ping-asc', 'dual_slot_enabled': True,
+    }))
+    monkeypatch.setattr(m.XrayManager, 'prepare_router_auth', lambda self: None)
+    monkeypatch.setattr(m.XrayManager, 'detect_home_assistant_host', lambda self: 'ha.local')
+    monkeypatch.setattr(m.XrayManager, 'sync_supervisor_options', lambda self, **kw: (True, ''))
+    for _ in range(2):
+        instance = m.XrayManager()
+        for key, value in saved.items():
+            assert getattr(instance, key) == value, key
+
+
+def test_ui_save_preserves_options_edited_in_configuration(m, isolated_paths, write_options, monkeypatch):
+    original = write_options(auto_check_failures=3, ui_sort='ping-asc', log_level='warning')
+    monkeypatch.setattr(m.XrayManager, 'prepare_router_auth', lambda self: None)
+    monkeypatch.setattr(m.XrayManager, 'detect_home_assistant_host', lambda self: 'ha.local')
+    monkeypatch.delenv('SUPERVISOR_TOKEN', raising=False)
+    instance = m.XrayManager()
+    isolated_paths.RUNTIME_OPTIONS_PATH.write_text(json.dumps({
+        'auto_check_failures': 3, '_base_options': {'auto_check_failures': 3, 'ui_sort': 'ping-asc'},
+    }))
+    # Home Assistant has saved these values, but /data/options.json is only
+    # rewritten when the container starts again.
+    supervisor_options = {**instance.options, 'auto_check_failures': 9, 'log_level': 'debug'}
+    monkeypatch.setenv('SUPERVISOR_TOKEN', 'test-token')
+    requests = []
+    class Response:
+        def __init__(self, value): self.value = value
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def read(self): return json.dumps(self.value).encode()
+    def urlopen(request, timeout):
+        requests.append(request.get_method())
+        if request.get_method() == 'GET':
+            return Response({'result': 'ok', 'data': {'options': supervisor_options.copy()}})
+        supervisor_options.clear()
+        supervisor_options.update(json.loads(request.data)['options'])
+        return Response({'result': 'ok'})
+    monkeypatch.setattr(m.urllib.request, 'urlopen', urlopen)
+    result = instance.update_runtime_settings({'ui_sort': 'name-desc', 'ui_hide_excluded': False})
+    assert result['supervisor_synced'] is True
+    assert requests == ['GET', 'POST']
+    assert supervisor_options['auto_check_failures'] == 9
+    assert supervisor_options['log_level'] == 'debug'
+    assert supervisor_options['ui_sort'] == 'name-desc'
+    assert supervisor_options['ui_hide_excluded'] is False
+    assert json.loads(isolated_paths.OPTIONS_PATH.read_text()) == original
+    isolated_paths.OPTIONS_PATH.write_text(json.dumps(supervisor_options))
+    restarted = m.XrayManager()
+    assert restarted.auto_check_failures == 9
+    assert restarted.log_level == 'debug'
+    assert restarted.ui_sort == 'name-desc'
+    assert restarted.ui_hide_excluded is False
+
+
+def test_concurrent_bulk_ui_saves_preserve_the_newer_values(m, manager_factory, isolated_paths, write_options, monkeypatch):
+    original = write_options(ui_sort='ping-asc', auto_check_failures=3, update_interval_hours=1)
+    instance = manager_factory()
+    instance.options = original.copy()
+    instance.sync_supervisor_options = m.XrayManager.sync_supervisor_options.__get__(instance)
+    supervisor_options = original.copy()
+    monkeypatch.setenv('SUPERVISOR_TOKEN', 'test-token')
+    entered, release = threading.Event(), threading.Event()
+    first_read = True
+    class Response:
+        def __init__(self, payload): self.payload = payload
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def read(self): return json.dumps(self.payload).encode()
+    def urlopen(request, timeout):
+        nonlocal first_read
+        if request.get_method() == 'GET':
+            if first_read:
+                first_read = False
+                entered.set()
+                assert release.wait(5)
+            return Response({'result': 'ok', 'data': {'options': supervisor_options.copy()}})
+        supervisor_options.clear()
+        supervisor_options.update(json.loads(request.data)['options'])
+        return Response({'result': 'ok'})
+    monkeypatch.setattr(m.urllib.request, 'urlopen', urlopen)
+    newer = {'ui_sort': 'name-asc', 'auto_check_failures': 7, 'update_interval_hours': 3}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(instance.update_runtime_settings, {'ui_sort': 'name-desc', 'auto_check_failures': 5})
+        try:
+            assert entered.wait(5)
+            instance.settings_event.clear()
+            second = pool.submit(instance.update_runtime_settings, newer)
+            assert instance.settings_event.wait(5)
+        finally:
+            release.set()
+        assert first.result(timeout=5)['supervisor_synced']
+        assert second.result(timeout=5)['supervisor_synced']
+    persisted = json.loads(isolated_paths.RUNTIME_OPTIONS_PATH.read_text())
+    for key, value in newer.items():
+        assert getattr(instance, key) == value
+        assert persisted[key] == value
+        assert persisted['_base_options'][key] == value
+        assert supervisor_options[key] == value
+
+
+def test_invalid_bulk_save_leaves_every_option_unchanged(manager_factory, isolated_paths):
+    instance = manager_factory()
+    with pytest.raises(ValueError):
+        instance.update_runtime_settings({'ui_sort': 'name-desc', 'auto_check_failures': 0})
+    assert instance.ui_sort == 'ping-asc'
+    assert instance.auto_check_failures == 3
+    assert not isolated_paths.RUNTIME_OPTIONS_PATH.exists()
 
 
 @pytest.mark.parametrize(
@@ -299,14 +420,15 @@ def test_sync_supervisor_options(m, manager_factory, isolated_paths, monkeypatch
 
     monkeypatch.setenv("SUPERVISOR_TOKEN", "token")
     class Response:
+        def __init__(self, payload): self.payload = payload
         def __enter__(self): return self
         def __exit__(self, *args): return False
-        def read(self): return b'{"result":"ok"}'
+        def read(self): return json.dumps(self.payload).encode()
     captured = {}
     def urlopen(request, timeout):
         captured["request"] = request
         captured["timeout"] = timeout
-        return Response()
+        return Response({'result': 'ok', 'data': {'options': instance.options}})
     monkeypatch.setattr(m.urllib.request, "urlopen", urlopen)
     assert m.XrayManager.sync_supervisor_options(instance) == (True, "")
     assert captured["request"].get_header("Authorization") == "Bearer token"

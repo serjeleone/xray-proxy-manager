@@ -544,9 +544,18 @@ class SubscriptionMixin:
             )
 
     def refresh_subscription_job(self) -> None:
+        xpm_common.log('manual subscription refresh started')
         try:
             self.refresh_subscription_sync(initial=False)
-            message = 'Подписка обновлена'
+            with self.lock:
+                error = self.state.get('subscription_error', '')
+                count = len(self.candidates)
+            if error:
+                message = f'Подписка не обновлена: {error}'
+                xpm_common.log(f'manual subscription refresh failed; cached subscription retained: {error}', error=True)
+            else:
+                message = 'Подписка обновлена'
+                xpm_common.log(f'manual subscription refresh completed: {count} outbounds')
         except Exception as exc:
             xpm_common.log(f'manual subscription refresh failed: {exc}', error=True)
             message = f'Ошибка: {exc}'

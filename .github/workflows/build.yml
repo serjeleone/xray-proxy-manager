@@ -101,9 +101,12 @@ jobs:
           publish=false
           if [[ "${GITHUB_EVENT_NAME}" == "release" || "${GITHUB_REF_TYPE}" == "tag" || "${MANUAL_PUBLISH}" == "true" ]]; then
             publish=true
-          elif [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]] \
-            && ! git show-ref --verify --quiet "refs/tags/${release_tag}"; then
-            publish=true
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            rebuild_tag="$(git log -1 --format='%(trailers:key=Rebuild-Release,valueonly)')"
+            if ! git show-ref --verify --quiet "refs/tags/${release_tag}" \
+              || [[ "${rebuild_tag}" == "${release_tag}" ]]; then
+              publish=true
+            fi
           fi
           echo "publish=${publish}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
@@ -493,4 +496,18 @@ jobs:
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
               --title "$RELEASE_TAG" --notes-file release-notes.md
+          else
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$RELEASE_TAG" \
+              -f "sha=$GITHUB_SHA" -F force=true
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release-notes.md
+          fi
+
+          # Remove only a release branch that is fully included in this exact
+          # main commit; preserve any branch containing newer work.
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            release_branch="release/$RELEASE_TAG"
+            branch_sha="$(gh api "repos/$GH_REPO/git/ref/heads/$release_branch" --jq .object.sha 2>/dev/null || true)"
+            if [[ "$branch_sha" == "$GITHUB_SHA" ]]; then
+              gh api --method DELETE "repos/$GH_REPO/git/refs/heads/$release_branch"
+            fi
           fi

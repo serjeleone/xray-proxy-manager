@@ -60,10 +60,14 @@ class SwitchingMixin:
                 runtime_options = xpm_persistence.load_json(xpm_common.RUNTIME_OPTIONS_PATH, {})
                 if not isinstance(runtime_options, dict):
                     runtime_options = {}
+                base_options = xpm_persistence.load_json(xpm_common.OPTIONS_PATH, {})
+                runtime_options.setdefault('_base_options', {}).setdefault(
+                    'dual_slot_enabled', base_options.get('dual_slot_enabled', previous_mode),
+                )
                 runtime_options['dual_slot_enabled'] = desired_mode
                 xpm_persistence.atomic_write_json(xpm_common.RUNTIME_OPTIONS_PATH, runtime_options)
                 self.save_state()
-            supervisor_synced, supervisor_error = self.sync_supervisor_options()
+            supervisor_synced, supervisor_error = self.sync_supervisor_options({'dual_slot_enabled': desired_mode})
             xpm_common.log(
                 'Xray slot mode changed to '
                 f'{"dual-slot" if desired_mode else "single-slot"}; processes restarted'
@@ -936,6 +940,12 @@ class SwitchingMixin:
             self.manual_generation = getattr(self, 'manual_generation', 0) + 1
             self.invalidate_candidate_probe(candidate.id)
         if already_active:
+            with self.lock:
+                suspects = set(self.state.get('suspect_candidate_ids', []))
+                if candidate.id in suspects:
+                    suspects.discard(candidate.id)
+                    self.state['suspect_candidate_ids'] = sorted(suspects)
+                    self.save_state()
             return
         try:
             self.restart_xray_for(
@@ -952,8 +962,9 @@ class SwitchingMixin:
             raise xpm_errors.ProbeFailure(xpm_errors.human_probe_error(exc)) from exc
         with self.lock:
             self.invalidate_candidate_probe(candidate.id)
+            suspects = set(self.state.get('suspect_candidate_ids', []))
+            suspects.discard(candidate.id)
             if previous is not None and previous.id != candidate.id:
-                suspects = set(self.state.get('suspect_candidate_ids', []))
                 suspects.add(previous.id)
-                self.state['suspect_candidate_ids'] = sorted(suspects)
-                self.save_state()
+            self.state['suspect_candidate_ids'] = sorted(suspects)
+            self.save_state()

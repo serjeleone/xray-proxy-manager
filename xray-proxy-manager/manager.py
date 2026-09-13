@@ -73,13 +73,17 @@ class XrayManager(
 
         self.options: dict[str, Any] = copy.deepcopy(base_options)
         base_snapshot = runtime_options.get('_base_options', {})
+        if not isinstance(base_snapshot, dict):
+            base_snapshot = {}
         for key in common.RUNTIME_SETTING_KEYS:
             if key in runtime_options:
-                if (key in base_snapshot and key in base_options
-                        and base_options[key] != base_snapshot[key]
+                if (key in base_options
+                        and (key not in base_snapshot or base_options[key] != base_snapshot[key])
                         and base_options[key] != runtime_options[key]):
                     # A later edit in Home Assistant takes precedence over a
                     # saved UI override from an earlier application session.
+                    # Legacy overrides have no baseline; do not let them
+                    # silently replace values explicitly saved in HA.
                     runtime_options.pop(key)
                     runtime_changed = True
                 else:

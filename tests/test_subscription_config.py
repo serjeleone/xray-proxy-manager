@@ -236,6 +236,32 @@ def test_prepare_slot_config_removes_invalid_temp(m, manager_factory, candidate_
     assert not instance.slots["xray-a"].config_path.with_name("a.new.json").exists()
 
 
+def test_validation_logs_normalize_reading_config(m, manager_factory, monkeypatch, tmp_path):
+    line = '[Info] infra/conf/serial: Reading config: &{Name:/config/config.xray-b.new.json Format:json}'
+    monkeypatch.setattr(m.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(
+        [], 23, f'Xray test\n{line}\nFailed to start: invalid config', '',
+    ))
+    ok, output = manager_factory().xray_test(tmp_path / 'config.json')
+    assert not ok
+    assert 'Reading config: /config/config.xray-b.new.json' in output
+    assert '&{Name:' not in output
+    assert 'Failed to start: invalid config' in output
+
+
+@pytest.mark.parametrize('error', ['', 'download failed; cached subscription retained'])
+def test_manual_refresh_logs_actual_outcome(m, manager_factory, isolated_paths, error):
+    instance = manager_factory()
+    instance.refresh_subscription_sync = lambda **kwargs: instance.state.update(subscription_error=error)
+    instance.refresh_subscription_job()
+    lines, _ = m.common.ui_log_snapshot(100)
+    assert any('manual subscription refresh started' in line for line in lines)
+    if error:
+        assert error in instance.state['jobs']['refresh']['message']
+        assert not any('manual subscription refresh completed' in line for line in lines)
+    else:
+        assert any('manual subscription refresh completed' in line for line in lines)
+
+
 def test_save_active_clone_and_write_runtime_config(m, manager_factory, candidate_factory, isolated_paths, monkeypatch):
     instance = manager_factory()
     candidate = candidate_factory("active")

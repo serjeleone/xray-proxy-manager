@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -132,7 +133,7 @@ class SettingsMixin:
                 if self.update_interval_hours > 0 else None
             )
             self.settings_event.set()
-        supervisor_synced, supervisor_error = self.sync_supervisor_options()
+        supervisor_synced, supervisor_error = self.sync_supervisor_options(normalized)
         return {
             'ok': True,
             'restart_required': [],
@@ -344,33 +345,68 @@ class SettingsMixin:
             source='preferred-protocol',
         )
 
-    def sync_supervisor_options(self) -> tuple[bool, str]:
+    def sync_supervisor_options(self, changes: dict[str, Any] | None = None) -> tuple[bool, str]:
         with self.options_sync_lock:
-            return self._sync_supervisor_options()
+            return self._sync_supervisor_options(changes)
 
-    def _sync_supervisor_options(self) -> tuple[bool, str]:
+    def _sync_supervisor_options(self, changes: dict[str, Any] | None = None) -> tuple[bool, str]:
         token = os.environ.get('SUPERVISOR_TOKEN', '').strip()
         if not token:
             return False, 'SUPERVISOR_TOKEN недоступен; настройки сохранены локально'
         with self.lock:
-            sent_options = dict(self.options)
-        request_body = json.dumps({'options': sent_options}, ensure_ascii=False).encode('utf-8')
-        request = urllib.request.Request(
-            'http://supervisor/addons/self/options',
-            data=request_body,
-            method='POST',
-            headers={
-                'Authorization': f'Bearer {token}',
-                'Content-Type': 'application/json',
-            },
-        )
+            saved_runtime = xpm_persistence.load_json(xpm_common.RUNTIME_OPTIONS_PATH, {})
+            if not isinstance(saved_runtime, dict):
+                saved_runtime = {}
+            baseline = saved_runtime.get('_base_options', {})
+            if not isinstance(baseline, dict):
+                baseline = {}
+        headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
         try:
+            # /data/options.json is a startup snapshot. Read the live HA values
+            # before sending a full options object, otherwise an unrelated UI
+            # edit can undo a whole Configuration form saved before a restart.
+            request = urllib.request.Request('http://supervisor/addons/self/info', headers=headers)
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode('utf-8') or '{}')
+            current = (payload.get('data') or {}).get('options')
+            if payload.get('result') != 'ok' or not isinstance(current, dict):
+                return False, 'Не удалось прочитать настройки Supervisor; настройки сохранены локально'
+            sent_options = copy.deepcopy(current)
+            xpm_common.migrate_auto_switch_excluded_option(sent_options)
+            xpm_common.migrate_test_url_options(sent_options)
+            for key in xpm_common.RETIRED_OPTION_KEYS:
+                sent_options.pop(key, None)
+
+            # Retry unsynced UI changes only if HA has not subsequently edited
+            # the same key. Explicit changes in this request take precedence.
+            updates = {
+                key: saved_runtime[key] for key in xpm_common.RUNTIME_SETTING_KEYS
+                if key in saved_runtime
+                and (key not in baseline or saved_runtime[key] != baseline[key])
+                and (key not in sent_options or (key in baseline and sent_options[key] == baseline[key]))
+            }
+            updates.update(changes or {})
+            sent_options.update(updates)
+            request = urllib.request.Request(
+                'http://supervisor/addons/self/options',
+                data=json.dumps({'options': sent_options}, ensure_ascii=False).encode('utf-8'),
+                method='POST', headers=headers,
+            )
             with urllib.request.urlopen(request, timeout=10) as response:
                 payload = json.loads(response.read().decode('utf-8') or '{}')
             if payload.get('result') != 'ok':
                 return False, str(payload.get('message') or 'Supervisor отклонил настройки')
             with self.lock:
                 runtime_options = xpm_persistence.load_json(xpm_common.RUNTIME_OPTIONS_PATH, {})
+                if not isinstance(runtime_options, dict):
+                    runtime_options = {}
+                for key in xpm_common.RUNTIME_SETTING_KEYS:
+                    if (key not in updates and key in saved_runtime and key in sent_options
+                            and runtime_options.get(key) == saved_runtime[key]
+                            and saved_runtime[key] != sent_options[key]):
+                        # Retire stale overrides without discarding a newer UI
+                        # value written while the Supervisor request was in flight.
+                        runtime_options.pop(key, None)
                 runtime_options['_base_options'] = {
                     key: sent_options[key] for key in xpm_common.RUNTIME_SETTING_KEYS if key in sent_options
                 }

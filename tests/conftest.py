@@ -228,7 +228,7 @@ def manager_factory(m, candidate_factory, tmp_path):
         }
         instance.save_state = lambda: None
         instance.save_latencies = lambda: None
-        instance.sync_supervisor_options = lambda: (True, "")
+        instance.sync_supervisor_options = lambda *args, **kwargs: (True, "")
         return instance
     return make
 

@@ -35,7 +35,7 @@ class StatusMixin:
                 payload['draining'] = bool(draining_slots)
                 payload['excluded'] = self.candidate_is_excluded(item)
                 payload['checking'] = item.id in getattr(self, 'latency_checking_ids', set())
-                payload['suspect'] = item.id in self.state.get('suspect_candidate_ids', [])
+                payload['suspect'] = not is_active and item.id in self.state.get('suspect_candidate_ids', [])
                 payload['config_changed'] = bool(is_active and not self.same_outbound(item, active_slot.candidate))
                 candidates.append(payload)
 
@@ -71,7 +71,7 @@ class StatusMixin:
                     'draining': bool(slot.draining),
                     'excluded': False,
                     'checking': display_id in getattr(self, 'latency_checking_ids', set()),
-                    'suspect': stale_id in self.state.get('suspect_candidate_ids', []),
+                    'suspect': tag != self.active_slot_tag and stale_id in self.state.get('suspect_candidate_ids', []),
                 }
                 candidates.append(payload)
             protocols = sorted({item.protocol for item in self.candidates})

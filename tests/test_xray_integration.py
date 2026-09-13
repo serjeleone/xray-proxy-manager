@@ -102,6 +102,10 @@ def test_repeated_slot_modes_and_return_to_draining_outbound(live_manager):
     assert instance.slots['xray-a'].process is original
     assert 0 <= instance.latencies[first.id]['latency_ms'] < 500
     assert instance.latencies[first.id]['checked_at'] > 1
+    assert first.id not in instance.state['suspect_candidate_ids']
+    assert second.id in instance.state['suspect_candidate_ids']
+    active = next(item for item in instance.status_payload()['candidates'] if item['active'])
+    assert active['suspect'] is False
     for dual in (False, True, False, True, False):
         generation = instance.switch_generation
         instance.set_slot_mode(dual)
@@ -149,6 +153,35 @@ def test_download_stats_without_selector_include_closed_connections(live_manager
     instance.set_slot_mode(False)
     instance.refresh_active_throughput()
     assert instance.throughput_payload()['bytes_per_second'] == 0
+
+
+@pytest.mark.parametrize('strategy, observer', [
+    ('leastPing', 'observatory'), ('leastLoad', 'burstObservatory'),
+])
+def test_subscription_with_observer_balancer_starts_and_transfers(live_manager, strategy, observer):
+    instance = live_manager
+    configs = copy.deepcopy(instance.subscription[:1])
+    configs[0][observer] = {'subjectSelector': ['node']}
+    configs[0]['routing'] = {
+        'balancers': [{'tag': 'auto', 'selector': ['node'], 'strategy': {'type': strategy}}],
+        'rules': [{'type': 'field', 'network': 'tcp,udp', 'balancerTag': 'auto'}],
+    }
+    instance.stop_xray()
+    instance.download_subscription = lambda: configs
+    instance.refresh_subscription_sync(initial=True)
+    assert instance.state['subscription_error'] == ''
+    assert instance.slots[instance.active_slot_tag].running()
+    assert transfer(instance, '/download').returncode == 0
+    instance.refresh_active_throughput()
+    assert instance.throughput_payload()['available'] is True
+    candidate = instance.candidates[0]
+    probe = instance.build_config(candidate, test_port=instance.find_free_port())
+    path = instance.slots[instance.active_slot_tag].config_path.with_name('probe.json')
+    path.write_text(json.dumps(probe))
+    assert instance.xray_test(path)[0]
+    # Source subscription data must remain intact for export and future updates.
+    assert configs[0]['routing']['balancers'][0]['strategy']['type'] == strategy
+    assert observer in configs[0]
 
 
 def test_socks_source_cidr_rejects_then_allows_client(live_manager):

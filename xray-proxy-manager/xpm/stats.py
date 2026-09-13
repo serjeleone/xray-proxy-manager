@@ -73,21 +73,26 @@ class StatsMixin:
             # counters count each SOCKS payload once, including closed flows.
             result = subprocess.run([
                 xpm_common.XRAY_BIN, 'api', 'statsquery', f'--server=127.0.0.1:{slot.stats_port}',
-                '-timeout', '1', '-pattern', 'inbound>>>socks>>>traffic>>>downlink',
-            ], capture_output=True, text=True, timeout=2)
+                '-timeout', '3', '-pattern', 'inbound>>>socks>>>traffic>>>downlink',
+            ], capture_output=True, text=True, timeout=4)
             if result.returncode != 0:
-                raise RuntimeError('Статистика Xray временно недоступна')
+                detail = (result.stderr or result.stdout).strip().splitlines()
+                raise RuntimeError(detail[-1][:300] if detail else f'Xray stats exit code {result.returncode}')
             payload = json.loads(result.stdout)
             download_bytes = sum(
-                max(0, int(item.get('value', 0))) for item in payload.get('stat', [])
+                max(0, int(item.get('value', 0))) for item in (payload.get('stat') or [])
                 if item.get('name') == 'inbound>>>socks>>>traffic>>>downlink'
             )
             with self.lock:
                 if self.active_slot_tag == slot_tag and slot.process is process:
+                    if self.throughput_state.get('error'):
+                        xpm_common.log(f'Xray throughput stats recovered for {slot_tag}')
                     self.update_active_throughput(slot_tag, download_bytes)
         except Exception as exc:
             with self.lock:
                 if self.active_slot_tag == slot_tag and slot.process is process:
+                    if not self.throughput_state.get('error'):
+                        xpm_common.log(f'Xray throughput stats unavailable for {slot_tag}: {exc}', error=True)
                     self.reset_active_throughput(slot_tag, 'Статистика Xray временно недоступна')
 
     def active_throughput_loop(self) -> None:

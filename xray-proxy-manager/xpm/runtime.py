@@ -36,6 +36,14 @@ class RuntimeMixin:
         result.setdefault('log', {})['loglevel'] = 'none' if test_port is not None else self.log_level
         for key in ('api', 'metrics', 'stats', 'observatory', 'burstObservatory'):
             result.pop(key, None)
+        # The manager performs the health checks and pins SOCKS traffic to the
+        # selected outbound. Subscription balancers must not require the
+        # observatories removed above, even when their rules are shadowed by
+        # our SOCKS rule: Xray resolves every balancer's dependencies at startup.
+        routing = result.get('routing') if isinstance(result.get('routing'), dict) else {}
+        for balancer in routing.get('balancers') or []:
+            if (balancer.get('strategy') or {}).get('type', '').lower() in {'leastping', 'leastload'}:
+                balancer['strategy'] = {'type': 'random'}
         if test_port is None:
             if not slot.stats_port:
                 slot.stats_port = self.find_free_port()
@@ -187,7 +195,11 @@ class RuntimeMixin:
             text=True,
             timeout=30,
         )
-        output = '\n'.join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+        output = '\n'.join(
+            xpm_common.normalize_xray_log_line(line)
+            for part in (result.stdout, result.stderr) if part.strip()
+            for line in part.strip().splitlines()
+        )
         bad_markers = (
             'Failed to start',
             'not all dependencies are resolved',
