@@ -336,13 +336,17 @@ def test_selected_suspect_outbound_is_green(page: Page, web_app_html: str):
     expect(active.locator('.ping.suspect')).to_have_count(0)
 
 
-def test_throughput_badge_updates_and_displays_small_transfers(page: Page, web_app_html: str):
+def test_throughput_badge_keeps_v093_format_and_size(page: Page, web_app_html: str):
     harness = open_app(page, web_app_html)
     badge = page.locator('#throughputValue')
     expect(badge).to_have_text('15.4 МБ/с')
-    for speed, expected in [(2.3, '2.3 МБ/с'), (0.012, '0.012 МБ/с'), (0, '0.0 МБ/с')]:
+    bounds = page.locator('#throughputBadge').bounding_box()
+    for speed, expected in [(2.3, '2.3 МБ/с'), (0.012, '0.0 МБ/с'), (0.0001, '0.0 МБ/с'),
+                            (0.16, '0.2 МБ/с'), (99.9, '99.9 МБ/с'), (0, '0.0 МБ/с')]:
         harness.throughput['megabytes_per_second'] = speed
         expect(badge).to_have_text(expected)
+        current = page.locator('#throughputBadge').bounding_box()
+        assert (current['width'], current['height']) == (bounds['width'], bounds['height'])
     harness.throughput.update(available=False, error='Статистика Xray временно недоступна')
     expect(badge).to_have_text('— МБ/с')
     expect(page.locator('#throughputBadge')).to_have_attribute('title', 'Статистика Xray временно недоступна')

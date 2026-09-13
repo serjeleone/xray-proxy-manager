@@ -207,6 +207,9 @@ def manager_factory(m, candidate_factory, tmp_path):
         }
         instance._throughput_last_slot = ""
         instance._throughput_last_sample_at = None
+        instance._throughput_last_process = None
+        instance._throughput_last_generation = None
+        instance._throughput_download_bytes = 0
         instance._throughput_connection_download_bytes = {}
         instance.router_state = {
             "configured": True,

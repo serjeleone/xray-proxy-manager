@@ -680,7 +680,7 @@ body.modal-open { overflow: hidden; }
 }
 .throughput-badge {
   min-width: 70px;
-  width: max-content;
+  width: 70px;
   height: 26px;
   align-self: start;
   justify-self: end;

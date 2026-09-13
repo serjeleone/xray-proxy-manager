@@ -293,6 +293,9 @@ class XrayManager(
         }
         self._throughput_last_slot = ''
         self._throughput_last_sample_at: float | None = None
+        self._throughput_last_process = None
+        self._throughput_last_generation = None
+        self._throughput_download_bytes = 0
         self._throughput_connection_download_bytes: dict[str, int] = {}
         self.router_state: dict[str, Any] = {
             'configured': self.router_control_enabled,

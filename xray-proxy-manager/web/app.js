@@ -948,8 +948,7 @@ async function fetchStatus(force = false) {
 function formatThroughput(value) {
   const numeric = Number(value);
   const safe = Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
-  if (safe > 0 && safe < 0.001) return '<0.001 МБ/с';
-  return `${safe.toFixed(safe > 0 && safe < 1 ? 3 : 1)} МБ/с`;
+  return `${safe.toFixed(1)} МБ/с`;
 }
 
 function renderThroughput(payload) {
