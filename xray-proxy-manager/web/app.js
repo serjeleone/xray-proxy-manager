@@ -642,7 +642,7 @@ function render(payload) {
     li.innerHTML = escapeHtml(item).replace(/`([^`]+)`/g, '<code>$1</code>');
     return li;
   }));
-  $('versionLine').textContent = `Приложение Xray Proxy Manager ${payload.version}${payload.commit ? ` ${payload.commit}` : ''} · ${payload.xray_version}`;
+  $('versionLine').textContent = `Xray Proxy Manager ${payload.version}${payload.commit ? ` ${payload.commit}` : ''} · ${payload.xray_version}`;
   $('syncNote').textContent = subscription.next_update_at
     ? `Следующее обновление: ${formatDateTime(subscription.next_update_at)}`
     : 'Автообновление подписки выключено';
