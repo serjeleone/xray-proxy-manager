@@ -411,6 +411,8 @@ jobs:
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
           context: ./xray-proxy-manager
           image: ${{ matrix.image }}
+          build-args: |
+            BUILD_REF=${{ github.sha }}
 
           image-tags: |
             ${{ needs.prepare.outputs.release_tag }}
@@ -473,19 +475,22 @@ jobs:
           persist-credentials: false
       - name: Prepare release notes
         env:
-          RELEASE_SUBJECT: ${{ needs.prepare.outputs.commit_subject }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           python - <<'PYNOTES'
           import os
+          import re
           from pathlib import Path
 
           tag = os.environ['RELEASE_TAG']
           changelog = Path('xray-proxy-manager/CHANGELOG.md').read_text()
-          section = changelog.split(f'## {tag}\n', 1)[1].split('\n## ', 1)[0].strip()
-          subject = os.environ['RELEASE_SUBJECT'].removeprefix(f'{tag} - ')
-          notes = f'# {subject} - {tag}\n\n{section}\n'
-          Path('release-notes.md').write_text(notes)
+          section = re.search(
+              rf'^## (?:Версия )?{re.escape(tag)}\s*\n.*?(?=^## |\Z)',
+              changelog, re.MULTILINE | re.DOTALL,
+          )
+          if not section:
+              raise SystemExit(f'No changelog section for {tag}')
+          Path('release-notes.md').write_text(section[0].strip() + '\n')
           PYNOTES
       - name: Publish release after container images
         env:

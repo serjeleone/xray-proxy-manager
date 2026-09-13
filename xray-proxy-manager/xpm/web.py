@@ -7,6 +7,7 @@ import socket
 import socketserver
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from typing import Any, TYPE_CHECKING
@@ -17,7 +18,12 @@ if TYPE_CHECKING:
     from manager import XrayManager
 
 
-class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+class ServerLoggingMixin:
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        xpm_common.log(f'request failed for {client_address}:\n{traceback.format_exc()}', error=True)
+
+
+class ThreadingHTTPServer(ServerLoggingMixin, socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
@@ -68,7 +74,7 @@ class IngressTCPProxyHandler(socketserver.BaseRequestHandler):
             request_thread.join(timeout=1)
 
 
-class ThreadingTCPProxyServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+class ThreadingTCPProxyServer(ServerLoggingMixin, socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
 

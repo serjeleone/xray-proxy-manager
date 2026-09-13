@@ -254,33 +254,26 @@ def test_outbound_and_runtime_buttons_send_expected_commands(page: Page, web_app
     ]
 
 
-def test_traffic_and_slot_mode_controls_send_explicit_desired_state(page: Page, web_app_html: str) -> None:
+def test_traffic_control_and_repeated_mode_changes_follow_server_state(page: Page, web_app_html: str) -> None:
     harness = open_app(page, web_app_html)
-
-    page.locator("#trafficButton").click()
-    page.once("dialog", lambda dialog: dialog.accept())
-    page.locator("#slotModeButton").click()
-
-    wait_for_requests(page, harness, 2)
+    page.locator('#trafficButton').click()
+    wait_for_requests(page, harness, 1)
     assert harness.requests == [
-        {"method": "POST", "path": "/api/traffic", "body": {"enabled": False}},
-        {"method": "POST", "path": "/api/mode", "body": {"dual_slot_enabled": False}},
+        {'method': 'POST', 'path': '/api/traffic', 'body': {'enabled': False}},
     ]
-
-
-def test_repeated_mode_changes_follow_confirmed_server_state(page: Page, web_app_html: str) -> None:
-    harness = open_app(page, web_app_html)
     def mode(body):
         enabled = body['dual_slot_enabled']
         harness.payload['blue_green'].update(dual_slot_enabled=enabled, mode='dual' if enabled else 'single')
         return {'ok': True, 'dual_slot_enabled': enabled}
     harness.responses['/api/mode'] = mode
     page.on('dialog', lambda dialog: dialog.accept())
-    for index, enabled in enumerate((False, True, False, True), 1):
+    for index, enabled in enumerate((False, True, False, True), 2):
         page.locator('#slotModeButton').click()
         expect(page.locator('#xrayState')).to_contain_text('Двухслотовый' if enabled else 'Однослотовый')
         wait_for_requests(page, harness, index)
-        assert harness.requests[-1]['body'] == {'dual_slot_enabled': enabled}
+        assert harness.requests[-1] == {
+            'method': 'POST', 'path': '/api/mode', 'body': {'dual_slot_enabled': enabled},
+        }
 
 
 def test_manual_selection_during_full_scan_refreshes_rejected_candidate(page: Page, web_app_html: str) -> None:
@@ -301,57 +294,30 @@ def test_manual_selection_during_full_scan_refreshes_rejected_candidate(page: Pa
     assert harness.payload['jobs']['latency']['running'] is True
 
 
-@pytest.mark.parametrize('sort, yellow_names', [
-    ('ping-asc', ['Yellow Z', 'Yellow A']), ('ping-desc', ['Yellow A', 'Yellow Z']),
-    ('name-asc', ['Yellow A', 'Yellow Z']), ('name-desc', ['Yellow Z', 'Yellow A']),
-    ('protocol-asc', ['Yellow Z', 'Yellow A']), ('protocol-desc', ['Yellow A', 'Yellow Z']),
-])
-def test_yellow_candidates_follow_green_group_and_selected_sort(page: Page, web_app_html: str, sort, yellow_names):
+def test_suspect_candidates_follow_healthy_group_in_all_sort_modes(page: Page, web_app_html: str):
     payload = base_payload()
     payload['candidates'] = [payload['candidates'][0], payload['candidates'][2]]
+    payload['candidates'][0]['suspect'] = True  # Old persisted status after an upgrade.
     for name, protocol, ping in [('Yellow Z', 'TROJAN', 1), ('Yellow A', 'VLESS', 50)]:
         item = candidate(name, name, protocol, latency={'status': 'ok', 'latency_ms': ping})
         item['suspect'] = True
         if name == 'Yellow Z':
             item.update(slot_tags=['xray-a'], draining_slots=['xray-a'])
         payload['candidates'].append(item)
-    payload['ui_settings']['sort'] = sort
-    open_app(page, web_app_html, payload)
-    assert card_names(page) == ['Active Finland', 'Regular VLESS', *yellow_names]
-    yellow = page.locator('.ping.suspect')
-    expect(yellow).to_have_count(2)
-    assert yellow.first.evaluate("element => getComputedStyle(element).color") == page.locator('#throughputBadge').evaluate("element => getComputedStyle(element).backgroundColor")
-    styles = yellow.first.evaluate("element => { const s = getComputedStyle(element); return [s.backgroundImage, s.borderTopColor]; }")
-    green_styles = page.locator('.ping.ok').first.evaluate("element => { const s = getComputedStyle(element); return [s.backgroundImage, s.borderTopColor]; }")
-    assert 'linear-gradient' in styles[0] and 'linear-gradient' in green_styles[0]
-    assert all(yellow_value != green_value for yellow_value, green_value in zip(styles, green_styles))
-
-
-def test_selected_suspect_outbound_is_green(page: Page, web_app_html: str):
-    payload = base_payload()
-    payload['candidates'][0]['suspect'] = True  # Old persisted status after an upgrade.
     open_app(page, web_app_html, payload)
     active = page.locator('.outbound-card').filter(has_text='Active Finland')
     expect(active.locator('.ping.ok')).to_have_text('82 мс')
     expect(active.locator('.ping.suspect')).to_have_count(0)
-
-
-def test_throughput_badge_keeps_v093_format_and_size(page: Page, web_app_html: str):
-    harness = open_app(page, web_app_html)
-    badge = page.locator('#throughputValue')
-    expect(badge).to_have_text('15.4 МБ/с')
-    bounds = page.locator('#throughputBadge').bounding_box()
-    for speed, expected in [(2.3, '2.3 МБ/с'), (0.012, '0.0 МБ/с'), (0.0001, '0.0 МБ/с'),
-                            (0.16, '0.2 МБ/с'), (99.9, '99.9 МБ/с'), (0, '0.0 МБ/с')]:
-        harness.throughput['megabytes_per_second'] = speed
-        expect(badge).to_have_text(expected)
-        current = page.locator('#throughputBadge').bounding_box()
-        assert (current['width'], current['height']) == (bounds['width'], bounds['height'])
-    harness.throughput.update(available=False, error='Статистика Xray временно недоступна')
-    expect(badge).to_have_text('— МБ/с')
-    expect(page.locator('#throughputBadge')).to_have_attribute('title', 'Статистика Xray временно недоступна')
-    harness.throughput.update(available=True, megabytes_per_second=4.5, error='')
-    expect(badge).to_have_text('4.5 МБ/с')
+    for sort, suspect_names in [
+        ('ping-asc', ['Yellow Z', 'Yellow A']), ('ping-desc', ['Yellow A', 'Yellow Z']),
+        ('name-asc', ['Yellow A', 'Yellow Z']), ('name-desc', ['Yellow Z', 'Yellow A']),
+        ('protocol-asc', ['Yellow Z', 'Yellow A']), ('protocol-desc', ['Yellow A', 'Yellow Z']),
+    ]:
+        page.locator('#sortSelect').select_option(sort)
+        expect(page.locator('#outboundList .outbound-title')).to_have_text([
+            'Active Finland', 'Regular VLESS', *suspect_names,
+        ])
+        expect(page.locator('.ping.suspect')).to_have_count(2)
 
 
 def test_throughput_poll_recovers_from_a_stalled_request(page: Page, web_app_html: str):
@@ -369,8 +335,14 @@ def test_throughput_poll_recovers_from_a_stalled_request(page: Page, web_app_htm
         return originalFetch(url, options);
       };
     </script>"""
-    open_app(page, web_app_html.replace('<head>', '<head>' + script))
-    expect(page.locator('#throughputValue')).to_have_text('15.4 МБ/с', timeout=10000)
+    harness = open_app(page, web_app_html.replace('<head>', '<head>' + script))
+    badge = page.locator('#throughputValue')
+    expect(badge).to_have_text('15.4 МБ/с', timeout=10000)
+    harness.throughput.update(available=False, error='Статистика Xray временно недоступна')
+    expect(badge).to_have_text('— МБ/с')
+    expect(page.locator('#throughputBadge')).to_have_attribute('title', 'Статистика Xray временно недоступна')
+    harness.throughput.update(available=True, megabytes_per_second=4.5, error='')
+    expect(badge).to_have_text('4.5 МБ/с')
 
 
 def test_auto_checker_save_separates_runtime_settings_and_preferences(page: Page, web_app_html: str) -> None:

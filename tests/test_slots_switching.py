@@ -11,22 +11,40 @@ import pytest
 from conftest import DummyProcess
 
 
-def test_log_xray_output_tracks_observed_outbound_and_filters_observatory(m, manager_factory, capsys):
+def test_log_xray_output_tracks_outbound_and_serializes_complete_lines(m, manager_factory, isolated_paths, capsys, monkeypatch):
     instance = manager_factory()
+    monkeypatch.setattr(m.time, 'strftime', lambda _fmt: '2026-09-13 16:41:16')
     process = DummyProcess(stdout=(
-        "[Info] infra/conf/serial: Reading config: &{Name:/config/a.json Format:json}\n"
-        "[Info] [1 -> node-tag] accepted\n"
+        "2026/09/13 16:41:15.750041 [Info] infra/conf/serial: Reading config: &{Name:/config/a.json Format:json}\n"
+        "2026/09/13 16:41:15 [Info] [1 -> node-tag] accepted\n"
         "app/observatory/burst: error ping ignored\n"
+        "\n"
     ))
     instance.log_xray_output("xray-a", process)
     assert instance.slots["xray-a"].observed_outbound_tag == "node-tag"
-    lines, _ = m.common.ui_log_snapshot(20)
-    assert any("Reading config: /config/a.json" in line for line in lines)
-    assert not any("error ping ignored" in line for line in lines)
+    # Multiline output from concurrent slot/manager threads stays in the same
+    # order in the container log and the UI, with no partial or merged lines.
+    threads = [threading.Thread(target=m.common.log, args=(f'worker {i}\n  detail {i}',)) for i in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    lines, total = m.common.ui_log_snapshot(20)
+    assert total == 10
+    assert lines == capsys.readouterr().out.splitlines()
+    assert lines[:2] == [
+        '2026-09-13 16:41:15 [xray-a] [Info] Reading config: /config/a.json',
+        '2026-09-13 16:41:15 [xray-a] [Info] [1 -> node-tag] accepted',
+    ]
+    assert all(line.startswith('2026-09-13 16:41:16 [xray-proxy-manager] ') for line in lines[2:])
+    m.common.log('failure\n  detail', error=True)
+    assert m.common.ui_log_snapshot(2)[0] == capsys.readouterr().err.splitlines()
 
 
 def test_start_slot_writes_config_starts_process_and_is_idempotent(m, manager_factory, candidate_factory, monkeypatch):
     instance = manager_factory()
+    with pytest.raises(RuntimeError, match="missing"):
+        instance.start_slot("xray-a")
     candidate = candidate_factory("node")
     written = []
     instance.write_slot_config = lambda tag, item: (
@@ -48,12 +66,6 @@ def test_start_slot_writes_config_starts_process_and_is_idempotent(m, manager_fa
     other = candidate_factory("other")
     with pytest.raises(RuntimeError, match="already running"):
         instance.start_slot("xray-a", other)
-
-
-def test_start_slot_requires_config_when_no_candidate(m, manager_factory):
-    instance = manager_factory()
-    with pytest.raises(RuntimeError, match="missing"):
-        instance.start_slot("xray-a")
 
 
 def test_stop_slot_cleans_state_and_kills_on_timeout(m, manager_factory, monkeypatch):

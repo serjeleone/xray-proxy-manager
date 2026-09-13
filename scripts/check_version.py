@@ -26,7 +26,7 @@ def main() -> None:
         manifest_path.write_text(expected_manifest)
     elif manifest != expected_manifest:
         raise SystemExit('config.yaml differs from VERSION; run scripts/check_version.py --write')
-    first_release = re.search(r'^## (v\S+)', (APP / 'CHANGELOG.md').read_text(), re.M)
+    first_release = re.search(r'^## (?:Версия )?(v\S+)', (APP / 'CHANGELOG.md').read_text(), re.M)
     if not first_release or first_release[1] != tag:
         raise SystemExit(f'The first CHANGELOG section must be {tag}')
     sys.path.insert(0, str(APP))

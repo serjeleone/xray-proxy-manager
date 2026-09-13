@@ -45,4 +45,8 @@ COPY web /web
 COPY run.sh /run.sh
 RUN chmod 0755 /run.sh /manager.py
 
+ARG BUILD_REF
+ENV XPM_BUILD_COMMIT="${BUILD_REF}"
+LABEL org.opencontainers.image.revision="${BUILD_REF}"
+
 CMD ["/run.sh"]

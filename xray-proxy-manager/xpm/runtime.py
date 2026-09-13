@@ -4,6 +4,7 @@ import copy
 import ipaddress
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -303,9 +304,7 @@ class RuntimeMixin:
                     slot.observed_outbound_at = xpm_common.now_ts()
             if self.disable_observatory and 'app/observatory/burst: error ping ' in text:
                 continue
-            prefixed = f'[{slot_tag}] {text}'
-            xpm_common.append_ui_log(prefixed)
-            print(prefixed, flush=True)
+            xpm_common.log(text, prefix=f'[{slot_tag}]')
 
     def start_slot(self, slot_tag: str, candidate: xpm_models.Candidate | None = None) -> None:
         slot = self.slots[slot_tag]
@@ -479,7 +478,8 @@ class RuntimeMixin:
         try:
             result = subprocess.run([xpm_common.XRAY_BIN, 'version'], capture_output=True, text=True, timeout=5)
             lines = (result.stdout or result.stderr).splitlines()
-            self._xray_version_cache = lines[0].strip() if lines else 'unknown'
+            banner = lines[0].strip() if lines else 'unknown'
+            self._xray_version_cache = re.sub(r'\s+\(Xray,[^)]*\)', '', banner)
         except Exception:
             self._xray_version_cache = 'unknown'
         return self._xray_version_cache

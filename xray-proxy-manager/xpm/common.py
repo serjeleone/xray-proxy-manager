@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from collections import deque
 import math
+import os
 import re
 import sys
 import threading
@@ -102,6 +103,9 @@ SWITCHING_PRESETS = {'smooth', 'adaptive', 'forced'}
 ADDON_VERSION = (Path(__file__).resolve().parents[1] / 'VERSION').read_text(encoding='utf-8').strip()
 
 
+ADDON_COMMIT = os.environ.get('XPM_BUILD_COMMIT', '').strip()[:7]
+
+
 DEFAULT_PRIMARY_TEST_URL = 'https://www.gstatic.com/generate_204'
 
 
@@ -172,6 +176,9 @@ OUTBOUND_LOG_RE = re.compile(r'\[[^\]\n]*?->\s*([^\]\s]+)\]')
 
 
 XRAY_READING_CONFIG_RE = re.compile(r'(Reading config:)\s*&\{Name:([^}\s]+)\s+Format:[^}]+\}')
+
+
+LOG_TIMESTAMP_RE = re.compile(r'^(\d{4})[/-](\d{2})[/-](\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+')
 
 
 SAFE_RULE_RE = re.compile(r'^[A-Za-z0-9_-]+$')
@@ -451,7 +458,7 @@ def release_notes_payload() -> dict[str, Any]:
     try:
         text = CHANGELOG_PATH.read_text(encoding='utf-8')
         pattern = re.compile(
-            rf'^##\s+v?{re.escape(ADDON_VERSION)}\s*$\n(.*?)(?=^##\s+|\Z)',
+            rf'^##\s+(?:Версия\s+)?v?{re.escape(ADDON_VERSION)}\s*$\n(.*?)(?=^##\s+|\Z)',
             re.MULTILINE | re.DOTALL,
         )
         match = pattern.search(text)
@@ -467,11 +474,27 @@ def release_notes_payload() -> dict[str, Any]:
     return copy.deepcopy(RELEASE_NOTES_CACHE)
 
 
-def log(message: str, *, error: bool = False) -> None:
+def log(message: str, *, error: bool = False, prefix: str = LOG_PREFIX) -> None:
+    """Write identical, complete lines to the UI and container output."""
     stream = sys.stderr if error else sys.stdout
-    line = f'{LOG_PREFIX} {message}'
-    append_ui_log(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {line}')
-    print(line, file=stream, flush=True)
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    lines = []
+    for text in ANSI_ESCAPE_RE.sub('', str(message)).splitlines():
+        text = normalize_xray_log_line(text).rstrip()
+        if not text.strip():
+            continue
+        match = LOG_TIMESTAMP_RE.match(text)
+        if match:
+            year, month, day, clock = match.groups()
+            timestamp = f'{year}-{month}-{day} {clock}'
+            text = text[match.end():]
+        lines.append(f'{timestamp} {prefix} {text}')
+    if lines:
+        # The same lock keeps messages from concurrent slot readers intact in
+        # both destinations, including multiline failures and tracebacks.
+        with LOG_BUFFER_LOCK:
+            LOG_BUFFER.extend(lines)
+            print('\n'.join(lines), file=stream, flush=True)
 
 
 def now_ts() -> int:

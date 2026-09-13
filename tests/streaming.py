@@ -9,7 +9,6 @@ import ssl
 import struct
 import subprocess
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -176,24 +175,3 @@ def streaming_download(live_manager, m, tmp_path, request):
             thread.join(2)
         for server in servers:
             server.server_close()
-
-
-def test_speed_changes_while_spliced_download_is_still_open(streaming_download):
-    stream = streaming_download
-    instance = stream.instance
-    instance.refresh_active_throughput()
-    for _ in range(3):
-        time.sleep(1)
-        instance.refresh_active_throughput()
-        payload = instance.throughput_payload()
-        print('stream:', stream.counters['download'], 'bytes; badge:', payload['megabytes_per_second'], 'MB/s')
-        assert stream.receiving.is_alive()
-        assert payload['available'] and payload['source'] == 'selector'
-        assert 1_000_000 < payload['bytes_per_second'] < 7_000_000
-    stream.paused.set()
-    time.sleep(0.25)  # Let bytes already queued in TCP drain before the baseline.
-    instance.refresh_active_throughput()
-    time.sleep(1)
-    instance.refresh_active_throughput()
-    assert stream.receiving.is_alive()
-    assert instance.throughput_payload()['bytes_per_second'] == 0

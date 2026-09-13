@@ -465,6 +465,16 @@ class XrayManager(
 
 def main() -> int:
     manager: XrayManager | None = None
+    previous_thread_hook = threading.excepthook
+
+    def handle_thread_exception(args: threading.ExceptHookArgs) -> None:
+        if args.exc_type is SystemExit:
+            return
+        detail = ''.join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+        name = args.thread.name if args.thread else 'unknown'
+        common.log(f'uncaught exception in thread {name}:\n{detail}', error=True)
+
+    threading.excepthook = handle_thread_exception
     try:
         manager = XrayManager()
 
@@ -477,12 +487,14 @@ def main() -> int:
         manager.run()
         return 0
     except Exception as exc:
-        common.log(f'fatal error: {exc}', error=True)
-        traceback.print_exc()
+        common.log(f'fatal error: {exc}\n{traceback.format_exc()}', error=True)
         return 1
     finally:
-        if manager:
-            manager.shutdown()
+        try:
+            if manager:
+                manager.shutdown()
+        finally:
+            threading.excepthook = previous_thread_hook
 
 
 if __name__ == '__main__':

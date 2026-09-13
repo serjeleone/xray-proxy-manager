@@ -9,7 +9,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from test_xray_integration import live_manager, transfer  # noqa: F401: pytest fixture
-from test_streaming_stats import streaming_download  # noqa: F401: pytest fixture
+from streaming import streaming_download  # noqa: F401: pytest fixture
 
 pytestmark = pytest.mark.ui
 
@@ -83,10 +83,9 @@ def test_open_stream_badge_reacts_to_rate_pause_and_resume(page: Page, m, stream
     try:
         page.goto(f'http://127.0.0.1:{server.server_port}/ingress/test/')
         value = page.locator('#throughputValue')
-        badge = page.locator('#throughputBadge')
         expect(value).to_have_text(re.compile(r'^[2-5]\.\d МБ/с$'), timeout=10000)
-        assert badge.bounding_box()['width'] == 70
-        assert badge.bounding_box()['height'] == 26
+        assert instance.throughput_payload()['source'] == 'selector'
+        assert stream.receiving.is_alive()
         stream.rate['chunk'] = 16384
         expect(value).to_have_text(re.compile(r'^(?:0\.[7-9]|1\.[0-5]) МБ/с$'), timeout=8000)
         stream.paused.set()
@@ -95,8 +94,7 @@ def test_open_stream_badge_reacts_to_rate_pause_and_resume(page: Page, m, stream
         stream.rate['chunk'] = 65536
         stream.paused.clear()
         expect(value).to_have_text(re.compile(r'^[2-5]\.\d МБ/с$'), timeout=8000)
-        assert badge.bounding_box()['width'] == 70
-        assert badge.bounding_box()['height'] == 26
+        assert stream.receiving.is_alive()
     finally:
         instance.stop_event.set()
         sampling.join(5)

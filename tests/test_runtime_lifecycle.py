@@ -285,7 +285,6 @@ def test_main_registers_signals_runs_and_always_shuts_down(m, monkeypatch):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(m, "XrayManager", FailingManager)
-    monkeypatch.setattr(m.traceback, "print_exc", lambda: None)
     assert m.main() == 1
 
 

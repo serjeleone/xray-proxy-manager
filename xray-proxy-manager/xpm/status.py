@@ -122,6 +122,7 @@ class StatusMixin:
                 }
             return {
                 'version': xpm_common.ADDON_VERSION,
+                'commit': xpm_common.ADDON_COMMIT,
                 'home_assistant_host': getattr(self, 'home_assistant_host', 'host'),
                 'release_notes': xpm_common.release_notes_payload(),
                 'xray_version': self.xray_version(),

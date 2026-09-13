@@ -31,6 +31,12 @@ def test_stats_failure_is_logged_once_and_recovers(m, manager_factory, isolated_
     assert instance._throughput_download_bytes == 1024
     lines, _ = m.common.ui_log_snapshot(100)
     assert sum('throughput stats recovered' in line for line in lines) == 1
+    # A successful RPC with no downlink counter is also unavailable, not idle.
+    responses.append(subprocess.CompletedProcess([], 0, '{}', ''))
+    instance.refresh_active_throughput()
+    assert not instance.throughput_payload()['available']
+    lines, _ = m.common.ui_log_snapshot(100)
+    assert any('downlink counter is missing' in line for line in lines)
 
 
 def test_old_stats_response_does_not_reset_new_active_slot(m, manager_factory, monkeypatch):
@@ -125,14 +131,3 @@ def test_stale_selector_response_is_ignored(manager_factory, change):
     instance.selector_connections = connections
     instance.refresh_active_throughput()
     assert not instance.throughput_payload()['available']
-
-
-def test_missing_xray_counter_is_unavailable_not_zero(manager_factory, monkeypatch, m, isolated_paths):
-    instance = manager_factory()
-    instance.selector_control_enabled = False
-    instance.slots['xray-a'].process = SimpleNamespace(poll=lambda: None)
-    monkeypatch.setattr(m.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess([], 0, '{}', ''))
-    instance.refresh_active_throughput()
-    assert not instance.throughput_payload()['available']
-    lines, _ = m.common.ui_log_snapshot(100)
-    assert any('downlink counter is missing' in line for line in lines)
