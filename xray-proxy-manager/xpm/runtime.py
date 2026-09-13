@@ -43,8 +43,21 @@ class RuntimeMixin:
         # our SOCKS rule: Xray resolves every balancer's dependencies at startup.
         routing = result.get('routing') if isinstance(result.get('routing'), dict) else {}
         for balancer in routing.get('balancers') or []:
-            if (balancer.get('strategy') or {}).get('type', '').lower() in {'leastping', 'leastload'}:
+            if not isinstance(balancer, dict):
+                continue
+            strategy = balancer.get('strategy')
+            strategy_type = (
+                str(strategy.get('type') or '').lower()
+                if isinstance(strategy, dict)
+                else ''
+            )
+            if strategy_type in {'leastping', 'leastload'}:
                 balancer['strategy'] = {'type': 'random'}
+            # Random and roundRobin still request observatory when fallbackTag
+            # is set. Observatory is removed from runtime configurations, so
+            # keep the balancer self-contained and avoid an unresolved
+            # dependency during Xray startup.
+            balancer.pop('fallbackTag', None)
         if test_port is None:
             if not slot.stats_port:
                 slot.stats_port = self.find_free_port()
