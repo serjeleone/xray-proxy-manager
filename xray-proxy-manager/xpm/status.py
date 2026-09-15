@@ -15,14 +15,16 @@ class StatusMixin:
             active, selected, mismatch = self.effective_active_candidate()
             runtime_active_candidate = active_slot.candidate or selected or active
             effective_id = runtime_active_candidate.id if runtime_active_candidate else ''
-            represented_slots: set[str] = set()
+            slot_display_ids: dict[str, str] = {}
             candidates = []
             for item in self.candidates:
                 assigned_slots = [
                     tag for tag, slot in self.slots.items()
-                    if slot.running() and self.same_candidate_identity(item, slot.candidate)
+                    if slot.running()
+                    and self.same_candidate_identity(item, slot.candidate)
+                    and self.same_outbound(item, slot.candidate)
                 ]
-                represented_slots.update(assigned_slots)
+                slot_display_ids.update({tag: item.id for tag in assigned_slots})
                 draining_slots = [
                     tag for tag in assigned_slots if self.slots[tag].draining
                 ]
@@ -36,18 +38,23 @@ class StatusMixin:
                 payload['excluded'] = self.candidate_is_excluded(item)
                 payload['checking'] = item.id in getattr(self, 'latency_checking_ids', set())
                 payload['suspect'] = not is_active and item.id in self.state.get('suspect_candidate_ids', [])
-                payload['config_changed'] = bool(is_active and not self.same_outbound(item, active_slot.candidate))
+                payload['config_changed'] = bool(
+                    process_running
+                    and self.same_candidate_identity(item, active_slot.candidate)
+                    and not self.same_outbound(item, active_slot.candidate)
+                )
                 candidates.append(payload)
 
-            # A running slot may still use an outbound removed by a subscription
-            # refresh. Keep it visible as a normal card until the slot finishes,
-            # without attaching it to a similarly named replacement.
+            # A running slot may still use an outbound removed or changed by a
+            # subscription refresh. Keep that exact runtime snapshot visible;
+            # a stable ID alone does not prove the new configuration is running.
             for tag, slot in self.slots.items():
-                if not slot.running() or tag in represented_slots:
+                if not slot.running() or tag in slot_display_ids:
                     continue
                 stale = slot.candidate
                 stale_id = slot.candidate_id or (stale.id if stale else '')
                 display_id = self.slot_candidate_id(tag)
+                slot_display_ids[tag] = display_id
                 latency = self.latencies.get(display_id)
                 if latency is None and stale_id:
                     latency = self.latencies.get(stale_id)
@@ -95,6 +102,7 @@ class StatusMixin:
                     'active': tag == self.active_slot_tag,
                     'draining': slot.draining,
                     'candidate_id': slot.candidate_id,
+                    'display_candidate_id': slot_display_ids.get(tag, ''),
                     'candidate_name': slot.candidate_name,
                     'candidate_fingerprint': slot.candidate.fingerprint if slot.candidate else '',
                     'candidate_outbound_tag': slot.candidate.outbound_tag if slot.candidate else '',

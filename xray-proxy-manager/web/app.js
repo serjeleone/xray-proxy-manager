@@ -174,20 +174,25 @@ function latencyRank(item) {
   return Number.POSITIVE_INFINITY;
 }
 
-function candidateRuntimeState(item) {
-  const slotTags = Array.isArray(item.slot_tags) ? item.slot_tags.filter(Boolean) : [];
-  const drainingSlots = Array.isArray(item.draining_slots)
-    ? item.draining_slots.filter((tag) => slotTags.includes(tag))
-    : [];
+function candidateRuntimeState(item, payload) {
+  const blueGreen = payload.blue_green || {};
+  const slots = blueGreen.slots || {};
+  // The running slots are the source of truth for both the header and cards.
+  // Never infer selection from row flags, fingerprints, latency or list order.
+  const slotTags = Object.entries(slots)
+    .filter(([tag, slot]) => slot.running
+      && (slot.display_candidate_id || slot.candidate_id || `slot:${tag}`) === item.id)
+    .map(([tag]) => tag);
+  const drainingSlots = slotTags.filter((tag) => slots[tag].draining && tag !== blueGreen.active_slot);
   return {
-    active: Boolean(item.active && slotTags.length),
+    active: Boolean(payload.xray_running && slotTags.includes(blueGreen.active_slot)),
     slotTags,
     drainingSlots,
   };
 }
 
-function candidatePinPriority(item) {
-  const runtime = candidateRuntimeState(item);
+function candidatePinPriority(item, payload) {
+  const runtime = candidateRuntimeState(item, payload);
   if (runtime.active) return 0;
   if (runtime.drainingSlots.length) return 1;
   if (runtime.slotTags.length) return 2;
@@ -322,7 +327,7 @@ function sortedAndFilteredCandidates(items, payload) {
   const filtered = items.filter((item) => {
     // Runtime slots always remain visible, even when their outbound is now
     // excluded, unavailable, outside the filter, or absent from the subscription.
-    if (candidatePinPriority(item) < 3) return true;
+    if (candidatePinPriority(item, payload) < 3) return true;
     if (settings.hide_excluded && item.excluded) return false;
     if (protocol !== 'all' && item.protocol !== protocol) return false;
     if (settings.hide_unavailable && item.latency?.status === 'error') return false;
@@ -333,7 +338,8 @@ function sortedAndFilteredCandidates(items, payload) {
   const [field, direction] = settings.sort.split('-');
   const factor = direction === 'desc' ? -1 : 1;
   filtered.sort((a, b) => {
-    const pin = (item) => item.suspect && !item.active ? 3 : candidatePinPriority(item);
+    const pin = (item) => item.suspect && !candidateRuntimeState(item, payload).active
+      ? 3 : candidatePinPriority(item, payload);
     const pinDifference = pin(a) - pin(b);
     if (pinDifference !== 0) return pinDifference;
     const group = (item) => item.latency?.status === 'ok'
@@ -355,12 +361,12 @@ function sortedAndFilteredCandidates(items, payload) {
   return filtered;
 }
 
-function pingMarkup(item) {
+function pingMarkup(item, payload) {
   if (item.checking) return '<span class="ping checking">проверяется…</span>';
   const latency = item.latency;
   if (!latency) return '<span class="ping">не проверен</span>';
   if (latency.status === 'ok') {
-    const suspect = item.suspect && !item.active;
+    const suspect = item.suspect && !candidateRuntimeState(item, payload).active;
     const hint = suspect ? 'Ранее отключён вручную · ' : '';
     return `<span class="ping ${suspect ? 'suspect' : 'ok'}" title="${escapeHtml(hint + formatDateTime(latency.checked_at))}">${latency.latency_ms} мс</span>`;
   }
@@ -403,7 +409,7 @@ function renderCandidates(payload) {
   );
   const switching = Boolean(payload.jobs?.switch?.running || state.switchInFlight || state.modeInFlight);
   $('outboundList').innerHTML = items.map((item) => {
-    const runtime = candidateRuntimeState(item);
+    const runtime = candidateRuntimeState(item, payload);
     const slotTags = runtime.slotTags;
     const drainingSlots = runtime.drainingSlots;
     const slotBadges = slotTags.map((tag) => (
@@ -427,7 +433,7 @@ function renderCandidates(payload) {
       </div>
       <div class="outbound-actions">
         ${drainingSlot ? `<button class="mini-button danger" data-stop-slot="${escapeHtml(drainingSlot)}">Стоп</button>` : ''}
-        ${pingMarkup(item)}
+        ${pingMarkup(item, payload)}
         <button class="mini-button" data-test="${escapeHtml(item.id)}" ${operationRunning ? 'disabled' : ''}>Тест</button>
         <button class="mini-button select" data-select="${escapeHtml(item.id)}" ${(runtime.active && !item.config_changed) || switching ? 'disabled' : ''}>${item.config_changed ? 'Применить' : 'Выбрать'}</button>
       </div>
