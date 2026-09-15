@@ -14,6 +14,43 @@ from streaming import streaming_download  # noqa: F401: pytest fixture
 pytestmark = pytest.mark.ui
 
 
+def test_visible_faster_excluded_outbound_never_steals_live_selection(page: Page, m, live_manager, monkeypatch):
+    instance = live_manager
+    first, second, excluded = instance.candidates
+    instance.ui_hide_excluded = False
+    instance.auto_switch_excluded = excluded.name
+    pings = {first.id: 350, second.id: 50, excluded.id: 1}
+    monkeypatch.setattr(instance, 'test_candidate_for_full_scan', lambda item: {
+        'status': 'ok', 'latency_ms': pings[item.id], 'checked_at': 1,
+    })
+    instance.latencies = {cid: {'status': 'ok', 'latency_ms': ping} for cid, ping in pings.items()}
+    monkeypatch.setattr(m.common, 'WEB_ROOT', Path(__file__).parents[2] / 'xray-proxy-manager' / 'web')
+    handler = lambda *args, **kwargs: m.web.WebHandler(instance, *args, **kwargs)
+    server = m.web.ThreadingHTTPServer(('127.0.0.1', 0), handler)
+    serving = threading.Thread(target=server.serve_forever, daemon=True)
+    serving.start()
+    try:
+        page.goto(f'http://127.0.0.1:{server.server_port}/ingress/test/')
+        expect(page.locator('#activeName')).to_have_text(first.name)
+        expect(page.locator('.outbound-card.active .outbound-title')).to_have_text(first.name)
+        expect(page.locator(f'[data-select="{excluded.id}"]')).to_be_visible()
+
+        # Deterministic scan measurements; startup, pre-switch validation and
+        # the slot processes themselves use the real Xray release binary.
+        instance.latency_job(switch_to_best=True, source='auto-best')
+        assert instance.active_candidate_id == second.id
+        assert instance.active_slot_tag == 'xray-b'
+        expect(page.locator('#activeName')).to_have_text(second.name)
+        expect(page.locator('.outbound-card.active .outbound-title')).to_have_text(second.name)
+        expect(page.locator('#outboundList .outbound-title').first).to_have_text(second.name)
+        expect(page.locator('.active-chip')).to_have_count(1)
+        expect(page.locator(f'[data-select="{excluded.id}"]')).to_be_enabled()
+    finally:
+        server.shutdown()
+        server.server_close()
+        serving.join(2)
+
+
 def test_live_download_updates_badge_and_reselection_turns_green(
     page: Page, m, live_manager, monkeypatch,
 ):

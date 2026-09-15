@@ -82,10 +82,12 @@ def base_payload() -> dict:
             "slots": {
                 "xray-a": {
                     "tag": "xray-a", "socks_tcp": 10808, "running": True,
+                    "candidate_id": "drain-id", "display_candidate_id": "drain-id",
                     "draining": True, "drain_connections": 14,
                 },
                 "xray-b": {
                     "tag": "xray-b", "socks_tcp": 10809, "running": True,
+                    "candidate_id": "active-id", "display_candidate_id": "active-id",
                     "draining": False, "drain_connections": 0,
                 },
             },
@@ -221,10 +223,87 @@ def test_active_and_draining_candidates_bypass_filters_and_remain_pinned(page: P
     payload["ui_settings"].update({
         "protocol_filter": "VMESS", "hide_unavailable": True, "max_ping_ms": 125,
     })
+    payload["candidates"][0]["excluded"] = True  # Explicit manual selection remains active.
+    payload["candidates"][1]["excluded"] = True
     open_app(page, web_app_html, payload)
 
     assert card_names(page) == ["Active Finland", "Draining Germany", "Regular VMESS"]
     expect(page.locator("#candidateCount")).to_contain_text("Показано 3 из 4")
+
+
+def test_running_slots_override_stale_selection_with_visible_excluded_candidate(page: Page, web_app_html: str) -> None:
+    payload = base_payload()
+    payload["ui_settings"]["hide_excluded"] = False
+    payload["auto_checker"]["excluded"] = "Blocked"
+    excluded = candidate(
+        "excluded-id", "Blocked fastest", "VLESS", excluded=True,
+        latency={"status": "ok", "latency_ms": 1},
+        active=True, slot_tags=["xray-b"],
+    )
+    # A stale row must never override the actual running-slot identity.
+    payload["candidates"].insert(0, excluded)
+    payload["candidates"][1].update(active=False, slot_tags=[], suspect=True)
+    harness = open_app(page, web_app_html, payload)
+
+    def assert_selected(name: str, candidate_id: str) -> None:
+        expect(page.locator("#activeName")).to_have_text(name)
+        expect(page.locator(".outbound-card.active .outbound-title")).to_have_text(name)
+        expect(page.locator(".active-chip")).to_have_count(1)
+        expect(page.locator("#outboundList .outbound-title").first).to_have_text(name)
+        expect(page.locator(f'[data-select="{candidate_id}"]')).to_be_disabled()
+        expect(page.locator('[data-select="excluded-id"]')).to_be_enabled()
+        expect(page.locator(".outbound-card.active .ping.suspect")).to_have_count(0)
+
+    assert_selected("Active Finland", "active-id")
+    for sort in ("ping-desc", "name-asc", "protocol-desc", "ping-asc"):
+        page.locator("#sortSelect").select_option(sort)
+        assert_selected("Active Finland", "active-id")
+
+    # Automatic switching changes the runtime slots, while stale row flags and
+    # the faster excluded row remain unchanged.
+    harness.payload["blue_green"]["active_slot"] = "xray-a"
+    harness.payload["blue_green"]["slots"]["xray-a"].update(
+        candidate_id="vless-id", display_candidate_id="vless-id", draining=False,
+    )
+    harness.payload["blue_green"]["slots"]["xray-b"]["draining"] = True
+    harness.payload["active"] = next(item for item in harness.payload["candidates"] if item["id"] == "vless-id")
+    page.evaluate("fetchStatus(true)")
+    assert_selected("Regular VLESS", "vless-id")
+    expect(page.locator(".outbound-card.draining .outbound-title")).to_have_text("Active Finland")
+
+    page.locator("#hideExcluded").check()
+    expect(page.locator('[data-select="excluded-id"]')).to_have_count(0)
+    page.locator("#hideExcluded").uncheck()
+    assert_selected("Regular VLESS", "vless-id")
+
+    for slot in harness.payload["blue_green"]["slots"].values():
+        slot["running"] = False
+    harness.payload["xray_running"] = False
+    page.evaluate("fetchStatus(true)")
+    expect(page.locator(".outbound-card.active")).to_have_count(0)
+    expect(page.locator(".slot-badge")).to_have_count(0)
+
+
+def test_changed_profile_keeps_runtime_snapshot_active_in_ui(page: Page, web_app_html: str) -> None:
+    payload = base_payload()
+    payload["ui_settings"]["hide_excluded"] = False
+    running = payload["candidates"][0]
+    running.update(id="slot:xray-b", active=True)
+    payload["blue_green"]["slots"]["xray-b"]["display_candidate_id"] = running["id"]
+    changed = candidate(
+        "active-id", "Blocked replacement", "VLESS", excluded=True,
+        latency={"status": "ok", "latency_ms": 1},
+    )
+    changed["config_changed"] = True
+    payload["candidates"].insert(0, changed)
+    open_app(page, web_app_html, payload)
+
+    expect(page.locator(".outbound-card.active .outbound-title")).to_have_text("Active Finland")
+    expect(page.locator('[data-select="slot:xray-b"]')).to_be_disabled()
+    replacement = page.locator('[data-select="active-id"]')
+    expect(replacement).to_have_text("Применить")
+    expect(replacement).to_be_enabled()
+    expect(page.locator(".active-chip")).to_have_count(1)
 
 
 def test_recheck_replaces_stale_unavailable_state(page: Page, web_app_html: str) -> None:
@@ -303,6 +382,7 @@ def test_suspect_candidates_follow_healthy_group_in_all_sort_modes(page: Page, w
         item['suspect'] = True
         if name == 'Yellow Z':
             item.update(slot_tags=['xray-a'], draining_slots=['xray-a'])
+            payload['blue_green']['slots']['xray-a'].update(candidate_id=name, display_candidate_id=name)
         payload['candidates'].append(item)
     open_app(page, web_app_html, payload)
     active = page.locator('.outbound-card').filter(has_text='Active Finland')

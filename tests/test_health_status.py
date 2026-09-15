@@ -5,6 +5,7 @@ import socket
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -270,6 +271,55 @@ def test_effective_active_candidate_and_status_payload_keep_running_removed_outb
     assert payload["blue_green"]["active_slot"] == "xray-a"
     assert payload["release_notes"]["version"] == f"v{m.common.ADDON_VERSION}"
     assert payload["auto_checker"]["last_switch_source"] == "manual_ui"
+
+
+def test_status_does_not_mark_changed_excluded_profile_as_running(manager_factory, candidate_factory):
+    running = replace(candidate_factory("stable-id", name="Running Finland"), config_revision="old")
+    changed = replace(running, name="Blocked replacement", config_revision="new")
+    instance = manager_factory([changed])
+    instance.auto_switch_excluded = "Blocked"
+    instance.ui_hide_excluded = False
+    instance.active_candidate_id = running.id
+    slot = instance.slots["xray-a"]
+    slot.process = DummyProcess()
+    slot.candidate = running
+    slot.candidate_id = running.id
+    slot.candidate_name = running.name
+    instance.latencies[changed.id] = {"status": "ok", "latency_ms": 1}
+
+    payload = instance.status_payload()
+
+    assert payload["active"]["name"] == running.name
+    active_cards = [item for item in payload["candidates"] if item["active"]]
+    assert [item["name"] for item in active_cards] == [running.name]
+    assert active_cards[0]["id"] == "slot:xray-a"
+    replacement = next(item for item in payload["candidates"] if item["id"] == changed.id)
+    assert replacement["excluded"] and replacement["config_changed"]
+    assert not replacement["active"] and replacement["slot_tags"] == []
+    assert payload["blue_green"]["slots"]["xray-a"]["display_candidate_id"] == "slot:xray-a"
+
+
+def test_status_keeps_faster_excluded_duplicate_separate(manager_factory, candidate_factory):
+    running = candidate_factory("running", name="Running Finland", fingerprint="same")
+    excluded = candidate_factory("excluded", name="Blocked duplicate", fingerprint="same")
+    instance = manager_factory([excluded, running])
+    instance.auto_switch_excluded = "Blocked"
+    instance.ui_hide_excluded = False
+    instance.active_candidate_id = running.id
+    slot = instance.slots["xray-a"]
+    slot.process = DummyProcess()
+    slot.candidate = running
+    slot.candidate_id = running.id
+    instance.latencies = {
+        running.id: {"status": "ok", "latency_ms": 100},
+        excluded.id: {"status": "ok", "latency_ms": 1},
+    }
+
+    payload = instance.status_payload()
+
+    assert [item["id"] for item in payload["candidates"] if item["active"]] == [running.id]
+    assert payload["candidates"][0]["excluded"]
+    assert payload["candidates"][0]["slot_tags"] == []
 
 
 def test_xray_version_select_initialize_and_shutdown(m, manager_factory, candidate_factory, monkeypatch):
