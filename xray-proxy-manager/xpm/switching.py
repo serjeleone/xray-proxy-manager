@@ -919,6 +919,12 @@ class SwitchingMixin:
             self.switch_lock.release()
 
     def select_candidate(self, candidate_id: str) -> None:
+        # Resolve the target after any subscription commit, so a click during
+        # refresh uses the current list instead of failing on its switch lock.
+        with self.subscription_apply_lock:
+            self._select_candidate(candidate_id)
+
+    def _select_candidate(self, candidate_id: str) -> None:
         with self.lock:
             candidate = self.candidate_by_id(candidate_id)
             slot = None if candidate is not None else self.running_slot_by_candidate_id(candidate_id)

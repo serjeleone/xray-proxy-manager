@@ -58,3 +58,26 @@ def test_republish_updates_tag_and_only_deletes_a_fully_released_branch(tmp_path
     assert 'PATCH' in commands and 'refs/tags/v0.9.5' in commands
     assert '"release", "edit"' in commands
     assert ('DELETE' in commands) is deleted
+
+
+@pytest.mark.parametrize('prefix', ['', 'Версия '])
+def test_release_notes_follow_versioned_commit_title(tmp_path, prefix):
+    app = tmp_path / 'xray-proxy-manager'
+    app.mkdir()
+    (app / 'CHANGELOG.md').write_text(
+        f'# Журнал изменений\n\n## {prefix}v0.9.7\n\n- Первый пункт.\n- Второй пункт.\n\n'
+        '## v0.9.6\n\n- Старый пункт.\n', encoding='utf-8',
+    )
+    def git(*args):
+        subprocess.run(['git', *args], cwd=tmp_path, check=True, capture_output=True)
+    git('init', '-q')
+    for subject in ('v0.9.7 - Исправлено переключение слотов', 'Уточнена документация'):
+        git('-c', 'user.name=Test', '-c', 'user.email=test@example.test',
+            'commit', '--allow-empty', '-m', subject)
+    script = next(step['run'] for step in WORKFLOW['jobs']['release']['steps']
+                  if step.get('name') == 'Prepare release notes')
+    subprocess.run(['bash', '-e', '-c', script], cwd=tmp_path, check=True,
+                   env={**os.environ, 'RELEASE_TAG': 'v0.9.7'}, capture_output=True)
+    assert (tmp_path / 'release-notes.md').read_text() == (
+        '# Исправлено переключение слотов - v0.9.7\n\n- Первый пункт.\n- Второй пункт.\n'
+    )

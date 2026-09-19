@@ -422,7 +422,9 @@ class SubscriptionMixin:
                 error=True,
             )
 
-        with self.switch_lock:
+        # Downloads remain concurrent with manual selection. Only committing
+        # the new list waits for a selection (and vice versa).
+        with self.subscription_apply_lock, self.switch_lock:
             self.apply_subscription(configs, downloaded, download_error, initial=initial)
 
     def apply_subscription(

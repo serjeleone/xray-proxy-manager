@@ -207,6 +207,7 @@ class XrayManager(
 
         self.lock = threading.RLock()
         self.switch_lock = threading.Lock()
+        self.subscription_apply_lock = threading.Lock()
         self.router_lock = threading.Lock()
         self.options_sync_lock = threading.Lock()
         self.stop_event = threading.Event()

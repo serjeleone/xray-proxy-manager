@@ -338,9 +338,7 @@ function sortedAndFilteredCandidates(items, payload) {
   const [field, direction] = settings.sort.split('-');
   const factor = direction === 'desc' ? -1 : 1;
   filtered.sort((a, b) => {
-    const pin = (item) => item.suspect && !candidateRuntimeState(item, payload).active
-      ? 3 : candidatePinPriority(item, payload);
-    const pinDifference = pin(a) - pin(b);
+    const pinDifference = candidatePinPriority(a, payload) - candidatePinPriority(b, payload);
     if (pinDifference !== 0) return pinDifference;
     const group = (item) => item.latency?.status === 'ok'
       ? (item.suspect ? 1 : 0) : (item.latency?.status === 'error' ? 3 : 2);

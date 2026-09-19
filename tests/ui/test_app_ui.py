@@ -373,7 +373,41 @@ def test_manual_selection_during_full_scan_refreshes_rejected_candidate(page: Pa
     assert harness.payload['jobs']['latency']['running'] is True
 
 
-def test_suspect_candidates_follow_healthy_group_in_all_sort_modes(page: Page, web_app_html: str):
+@pytest.mark.parametrize('job', ['refresh', 'latency'])
+def test_background_jobs_keep_manual_selection_available(page: Page, web_app_html: str, job: str):
+    payload = base_payload()
+    payload['jobs'][job].update(running=True, progress=1, total=4, message='Фоновая операция')
+    for item in payload['candidates']:
+        item['checking'] = job == 'latency'
+    harness = open_app(page, web_app_html, payload)
+    expect(page.locator('#testAllButton')).to_be_disabled()
+    expect(page.locator('#refreshButton')).to_be_disabled()
+    expect(page.locator('[data-select="vless-id"]')).to_be_enabled()
+
+    def select(body):
+        assert body == {'id': 'vless-id'}
+        harness.payload['blue_green']['active_slot'] = 'xray-a'
+        harness.payload['blue_green']['slots']['xray-a'].update(
+            candidate_id='vless-id', display_candidate_id='vless-id', draining=False,
+        )
+        harness.payload['blue_green']['slots']['xray-b']['draining'] = True
+        harness.payload['active'] = harness.payload['candidates'][2]
+        return {'ok': True}
+
+    harness.responses['/api/select'] = select
+    page.locator('[data-select="vless-id"]').click()
+    expect(page.locator('#activeName')).to_have_text('Regular VLESS')
+    expect(page.locator('.outbound-card.active .outbound-title')).to_have_text('Regular VLESS')
+    expect(page.locator('[data-select="active-id"]')).to_be_enabled()
+    assert harness.payload['jobs'][job]['running'] is True
+
+    harness.payload['jobs']['switch'].update(running=True, message='Переключение')
+    page.evaluate('fetchStatus(true)')
+    expect(page.locator('[data-select="active-id"]')).to_be_disabled()
+
+
+@pytest.mark.parametrize("finish", ["drained", "stop"])
+def test_suspect_draining_slot_stays_pinned_until_finished(page: Page, web_app_html: str, finish: str):
     payload = base_payload()
     payload['candidates'] = [payload['candidates'][0], payload['candidates'][2]]
     payload['candidates'][0]['suspect'] = True  # Old persisted status after an upgrade.
@@ -384,10 +418,29 @@ def test_suspect_candidates_follow_healthy_group_in_all_sort_modes(page: Page, w
             item.update(slot_tags=['xray-a'], draining_slots=['xray-a'])
             payload['blue_green']['slots']['xray-a'].update(candidate_id=name, display_candidate_id=name)
         payload['candidates'].append(item)
-    open_app(page, web_app_html, payload)
+    harness = open_app(page, web_app_html, payload)
     active = page.locator('.outbound-card').filter(has_text='Active Finland')
     expect(active.locator('.ping.ok')).to_have_text('82 мс')
     expect(active.locator('.ping.suspect')).to_have_count(0)
+    for sort in ('ping-asc', 'ping-desc', 'name-asc', 'name-desc', 'protocol-asc', 'protocol-desc'):
+        page.locator('#sortSelect').select_option(sort)
+        expect(page.locator('#outboundList .outbound-title')).to_have_text([
+            'Active Finland', 'Yellow Z', 'Regular VLESS', 'Yellow A',
+        ])
+        expect(page.locator('.outbound-card.draining .ping.suspect')).to_have_text('1 мс')
+
+    # Server state after natural completion and the Stop action must both unpin
+    # the old slot, without clearing its yellow ping or changing the active one.
+    def stop(_body):
+        harness.payload['blue_green']['slots']['xray-a'].update(running=False, draining=False)
+        return {'ok': True}
+    if finish == 'stop':
+        harness.responses['/api/drain/stop'] = stop
+        page.locator('#outboundList [data-stop-slot="xray-a"]').click()
+    else:
+        stop({})
+        page.evaluate('fetchStatus(true)')
+    expect(page.locator('.outbound-card.draining')).to_have_count(0)
     for sort, suspect_names in [
         ('ping-asc', ['Yellow Z', 'Yellow A']), ('ping-desc', ['Yellow A', 'Yellow Z']),
         ('name-asc', ['Yellow A', 'Yellow Z']), ('name-desc', ['Yellow Z', 'Yellow A']),

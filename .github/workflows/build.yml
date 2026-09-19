@@ -473,6 +473,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Prepare release notes
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
@@ -480,6 +481,7 @@ jobs:
           python - <<'PYNOTES'
           import os
           import re
+          import subprocess
           from pathlib import Path
 
           tag = os.environ['RELEASE_TAG']
@@ -490,7 +492,13 @@ jobs:
           )
           if not section:
               raise SystemExit(f'No changelog section for {tag}')
-          Path('release-notes.md').write_text(section[0].strip() + '\n')
+          subject = subprocess.check_output(
+              ['git', 'log', '-1', '--format=%s', '--extended-regexp',
+               f'--grep=^{re.escape(tag)} - '], text=True,
+          ).strip()
+          title = f'{subject.removeprefix(tag + " - ")} - {tag}' if subject else tag
+          body = section[0].split('\n', 1)[1].strip()
+          Path('release-notes.md').write_text(f'# {title}\n\n{body}\n')
           PYNOTES
       - name: Publish release after container images
         env:

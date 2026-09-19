@@ -90,6 +90,7 @@ def manager_factory(m, candidate_factory, tmp_path):
         instance.options = {}
         instance.lock = threading.RLock()
         instance.switch_lock = threading.Lock()
+        instance.subscription_apply_lock = threading.Lock()
         instance.router_lock = threading.Lock()
         instance.options_sync_lock = threading.Lock()
         instance.stop_event = threading.Event()

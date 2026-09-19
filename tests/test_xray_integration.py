@@ -11,8 +11,104 @@ import socket
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 import pytest
+
+
+@pytest.mark.parametrize('phase, outcome', [
+    ('download', 'updated'), ('apply', 'updated'),
+    ('apply', 'invalid'), ('apply', 'removed'),
+])
+def test_manual_selection_during_subscription_refresh(live_manager, monkeypatch, phase, outcome):
+    instance = live_manager
+    first, second, _ = instance.candidates
+    configs = copy.deepcopy(instance.subscription)
+    configs[1]['remarks'] = 'Updated second'
+    if outcome == 'invalid':
+        configs = []
+    elif outcome == 'removed':
+        configs = configs[:1]
+    entered = threading.Event()
+    release = threading.Event()
+    apply = instance.apply_subscription
+
+    def pause():
+        entered.set()
+        assert release.wait(10), 'refresh was not released'
+
+    def download():
+        if phase == 'download':
+            pause()
+        return configs
+
+    def apply_download(*args, **kwargs):
+        if phase == 'apply':
+            pause()
+        return apply(*args, **kwargs)
+
+    monkeypatch.setattr(instance, 'download_subscription', download)
+    monkeypatch.setattr(instance, 'apply_subscription', apply_download)
+    instance.state['jobs']['refresh']['running'] = True
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        refreshing = pool.submit(instance.refresh_subscription_job)
+        try:
+            assert entered.wait(5)
+            selection = pool.submit(instance.select_candidate, second.id)
+            if phase == 'download':
+                selection.result(timeout=5)
+                assert instance.active_candidate_id == second.id
+                assert instance.state['jobs']['refresh']['running']
+            else:
+                # Applying the list must delay the click, not reject it as a
+                # competing switch or resolve it against the old list.
+                with pytest.raises(TimeoutError):
+                    selection.result(timeout=0.1)
+        finally:
+            release.set()
+        refreshing.result(timeout=5)
+        if outcome == 'removed':
+            with pytest.raises(ValueError, match='Outbound не найден'):
+                selection.result(timeout=5)
+            assert instance.active_candidate_id == first.id
+        else:
+            selection.result(timeout=5)
+            assert instance.active_candidate_id == second.id
+            assert instance.slots['xray-a'].draining
+            assert instance.slots['xray-b'].running()
+            expected_name = second.name if outcome == 'invalid' else 'Updated second'
+            assert instance.slots['xray-b'].candidate_name == expected_name
+        assert bool(instance.state['subscription_error']) == (outcome == 'invalid')
+
+
+def test_manual_selection_survives_inflight_full_scan(live_manager, monkeypatch):
+    instance = live_manager
+    first, second, _ = instance.candidates
+    entered = threading.Event()
+    release = threading.Event()
+
+    def probe(candidate):
+        entered.set()
+        assert release.wait(10), 'scan was not released'
+        return {'status': 'ok' if candidate.id == first.id else 'error',
+                'latency_ms': 1 if candidate.id == first.id else None,
+                'checked_at': 1, 'error': ''}
+
+    monkeypatch.setattr(instance, 'test_candidate_for_full_scan', probe)
+    instance.auto_checker_enabled = instance.auto_switch_best_enabled = True
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        checking = pool.submit(instance.latency_job, switch_to_best=True, source='auto-best')
+        try:
+            assert entered.wait(5)
+            instance.select_candidate(second.id)
+            assert instance.state['jobs']['latency']['running']
+            assert instance.active_candidate_id == second.id
+        finally:
+            release.set()
+        checking.result(timeout=5)
+    assert instance.active_candidate_id == second.id
+    assert instance.latencies[second.id]['status'] == 'ok'
+    assert instance.latencies[second.id]['checked_at'] > 1
 
 
 @pytest.fixture
