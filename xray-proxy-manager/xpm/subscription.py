@@ -427,6 +427,11 @@ class SubscriptionMixin:
         with self.subscription_apply_lock, self.switch_lock:
             self.apply_subscription(configs, downloaded, download_error, initial=initial)
 
+        # Startup already requests its own full scan in run(). Later successful
+        # updates use the same scan and reset the same periodic-check interval.
+        if downloaded and not initial:
+            self.request_subscription_check()
+
     def apply_subscription(
         self, configs: list[dict[str, Any]], downloaded: bool, download_error: str,
         *, initial: bool = False,

@@ -32,6 +32,14 @@ def test_manual_selection_during_subscription_refresh(live_manager, monkeypatch,
     entered = threading.Event()
     release = threading.Event()
     apply = instance.apply_subscription
+    checked = threading.Event()
+    latency_job = instance.latency_job
+
+    def check(*args, **kwargs):
+        try:
+            latency_job(*args, **kwargs)
+        finally:
+            checked.set()
 
     def pause():
         entered.set()
@@ -49,6 +57,7 @@ def test_manual_selection_during_subscription_refresh(live_manager, monkeypatch,
 
     monkeypatch.setattr(instance, 'download_subscription', download)
     monkeypatch.setattr(instance, 'apply_subscription', apply_download)
+    monkeypatch.setattr(instance, 'latency_job', check)
     instance.state['jobs']['refresh']['running'] = True
     with ThreadPoolExecutor(max_workers=2) as pool:
         refreshing = pool.submit(instance.refresh_subscription_job)
@@ -79,13 +88,24 @@ def test_manual_selection_during_subscription_refresh(live_manager, monkeypatch,
             expected_name = second.name if outcome == 'invalid' else 'Updated second'
             assert instance.slots['xray-b'].candidate_name == expected_name
         assert bool(instance.state['subscription_error']) == (outcome == 'invalid')
+        if outcome != 'invalid':
+            assert checked.wait(10)
 
 
-def test_manual_selection_survives_inflight_full_scan(live_manager, monkeypatch):
+@pytest.mark.parametrize('source', ['auto-best', 'subscription'])
+def test_manual_selection_survives_inflight_full_scan(live_manager, monkeypatch, source):
     instance = live_manager
     first, second, _ = instance.candidates
     entered = threading.Event()
     release = threading.Event()
+    finished = threading.Event()
+    latency_job = instance.latency_job
+
+    def check(*args, **kwargs):
+        try:
+            latency_job(*args, **kwargs)
+        finally:
+            finished.set()
 
     def probe(candidate):
         entered.set()
@@ -95,9 +115,14 @@ def test_manual_selection_survives_inflight_full_scan(live_manager, monkeypatch)
                 'checked_at': 1, 'error': ''}
 
     monkeypatch.setattr(instance, 'test_candidate_for_full_scan', probe)
+    monkeypatch.setattr(instance, 'latency_job', check)
     instance.auto_checker_enabled = instance.auto_switch_best_enabled = True
     with ThreadPoolExecutor(max_workers=1) as pool:
-        checking = pool.submit(instance.latency_job, switch_to_best=True, source='auto-best')
+        if source == 'subscription':
+            monkeypatch.setattr(instance, 'download_subscription', lambda: copy.deepcopy(instance.subscription))
+            checking = pool.submit(instance.refresh_subscription_sync)
+        else:
+            checking = pool.submit(instance.latency_job, switch_to_best=True, source=source)
         try:
             assert entered.wait(5)
             instance.select_candidate(second.id)
@@ -106,6 +131,7 @@ def test_manual_selection_survives_inflight_full_scan(live_manager, monkeypatch)
         finally:
             release.set()
         checking.result(timeout=5)
+        assert finished.wait(5)
     assert instance.active_candidate_id == second.id
     assert instance.latencies[second.id]['status'] == 'ok'
     assert instance.latencies[second.id]['checked_at'] > 1

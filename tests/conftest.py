@@ -185,6 +185,7 @@ def manager_factory(m, candidate_factory, tmp_path):
         }
         instance.latencies = {}
         instance.latency_checking_ids = set()
+        instance.pending_subscription_check_generation = None
         instance.started_at = int(time.time())
         instance.home_assistant_host = "homeassistant.local"
         instance.next_update_at = int(time.time()) + 3600

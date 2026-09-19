@@ -53,6 +53,7 @@ def test_refresh_subscription_preserves_running_removed_candidate(m, manager_fac
     instance.extract_candidates = lambda configs: [new]
     instance.rebind_slot_candidates = lambda: False
     instance.runtime_config_differs = lambda *a: False
+    instance.request_subscription_check = lambda: None
     monkeypatch.setattr(m.common, "SUBSCRIPTION_PATH", isolated_paths.SUBSCRIPTION_PATH)
     instance.refresh_subscription_sync(initial=False)
     assert instance.active_candidate_id == old.id

@@ -126,6 +126,7 @@ class SwitchingMixin:
         return {
             'manual': 'manual_scan',
             'auto-best': 'auto_best_check',
+            'subscription': 'auto_best_check',
             'startup': 'startup_scan',
             'preferred-selection': 'preference_ui',
             'preferred-country': 'preference_ui',

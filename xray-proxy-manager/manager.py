@@ -263,6 +263,7 @@ class XrayManager(
         if not isinstance(self.latencies, dict):
             self.latencies = {}
         self.latency_checking_ids: set[str] = set()
+        self.pending_subscription_check_generation: int | None = None
         self.active_candidate_id = str(self.state.get('active_candidate_id') or '')
         remembered_slot = str(self.state.get('active_slot_tag') or 'xray-a')
         self.active_slot_tag = (

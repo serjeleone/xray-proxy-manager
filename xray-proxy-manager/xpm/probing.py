@@ -541,10 +541,34 @@ class ProbingMixin:
             with self.lock:
                 self.latency_checking_ids.difference_update(checking_target_ids)
                 self.state['jobs']['latency'].update({'running': False, 'message': final_message})
-                if candidate_ids is None and source in {'manual', 'auto-best', 'startup'}:
+                if candidate_ids is None and source in {'manual', 'auto-best', 'startup', 'subscription'}:
                     self.state['auto_best_check_last_at'] = xpm_common.now_ts()
                     self.settings_event.set()
                 self.save_state()
+                self.start_pending_subscription_check()
+
+    def request_subscription_check(self) -> None:
+        with self.lock:
+            # Coalesce updates while a scan is running: its snapshot may not
+            # contain the new subscription, so scan the latest list afterwards.
+            self.pending_subscription_check_generation = getattr(self, 'manual_generation', 0)
+            self.start_pending_subscription_check()
+
+    def start_pending_subscription_check(self) -> None:
+        with self.lock:
+            generation = self.pending_subscription_check_generation
+            if (generation is None or self.state['jobs']['latency'].get('running')
+                    or self.stop_event.is_set()):
+                return
+            self.pending_subscription_check_generation = None
+            self.request_latency_test(
+                None,
+                switch_to_best=(
+                    self.auto_switch_best_enabled
+                    and generation == getattr(self, 'manual_generation', 0)
+                ),
+                source='subscription',
+            )
 
     def request_latency_test(
         self,
