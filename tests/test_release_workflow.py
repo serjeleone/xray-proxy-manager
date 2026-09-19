@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import subprocess
 
@@ -46,18 +47,26 @@ def test_republish_updates_tag_and_only_deletes_a_fully_released_branch(tmp_path
     cli.write_text('#!/usr/bin/env python3\n'
                    'import json, os, sys\n'
                    "with open(os.environ['GH_TEST_LOG'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-                   "if 'api' in sys.argv and '--jq' in sys.argv: print(os.environ['GH_TEST_BRANCH_SHA'])\n")
+                   "if 'api' in sys.argv and '--jq' in sys.argv: print(os.environ['GH_TEST_BRANCH_SHA'])\n"
+                   "if 'release' in sys.argv and '--json' in sys.argv: print(os.environ['GH_TEST_RELEASE_BODY'])\n")
     cli.chmod(0o755)
     log = tmp_path / 'gh.log'
+    heading = '# Заголовок, изменённый автором  - v0.9.5'
+    existing = f'{heading}\r\n\r\n- Первый пункт.\r\n'
+    notes = tmp_path / 'release-notes.md'
+    notes.write_text('# Новый заголовок из коммита\n\n- Первый пункт.\n- Исправлен пинг.\n')
     env = {**os.environ, 'PATH': f'{tmp_path}:{os.environ["PATH"]}', 'GH_TEST_LOG': str(log),
            'GH_TEST_BRANCH_SHA': branch_sha, 'GH_REPO': 'example/project', 'GITHUB_SHA': 'commit-under-test',
-           'GITHUB_REF': 'refs/heads/main', 'RELEASE_TAG': 'v0.9.5'}
+           'GITHUB_REF': 'refs/heads/main', 'RELEASE_TAG': 'v0.9.5', 'GH_TEST_RELEASE_BODY': existing}
     script = WORKFLOW['jobs']['release']['steps'][-1]['run']
     subprocess.run(['bash', '-e', '-c', script], env=env, cwd=tmp_path, check=True, capture_output=True)
     commands = log.read_text()
     assert 'PATCH' in commands and 'refs/tags/v0.9.5' in commands
     assert '"release", "edit"' in commands
     assert ('DELETE' in commands) is deleted
+    edit = next(json.loads(line) for line in commands.splitlines() if '"release", "edit"' in line)
+    assert '--title' not in edit
+    assert notes.read_text() == f'{heading}\n\n- Первый пункт.\n- Исправлен пинг.\n'
 
 
 @pytest.mark.parametrize('prefix', ['', 'Версия '])

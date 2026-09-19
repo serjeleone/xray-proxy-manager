@@ -759,9 +759,7 @@ class ProbingMixin:
                     checked_slot_tag = self.active_slot_tag
                     checked_process = active_slot.process
                     checked_generation = self.switch_generation
-                    active_check_id = self.active_candidate_id or active_slot.candidate_id or (
-                        active_slot.candidate.id if active_slot.candidate is not None else ''
-                    )
+                    active_check_id = self.slot_display_candidate_id(checked_slot_tag)
                     if active_check_id:
                         self.latency_checking_ids.add(active_check_id)
                 success, latency_ms, checks, error = self.check_active_tunnel()
@@ -776,15 +774,21 @@ class ProbingMixin:
                             or self.switch_lock.locked()):
                         continue
                     self.state['auto_check_last_at'] = checked_at
+                    # The subscription can change while this process is being
+                    # probed. Resolve its current display ID before saving so a
+                    # replacement config never receives the running slot's ping.
+                    result_id = self.slot_display_candidate_id(checked_slot_tag)
+                    config_revision = active_slot.candidate.config_revision if active_slot.candidate else ''
                     if success:
                         self.state['auto_check_failures'] = 0
                         self.state['auto_check_last_error'] = ''
-                        if self.active_candidate_id and latency_ms is not None:
-                            self.latencies[self.active_candidate_id] = {
+                        if latency_ms is not None:
+                            self.latencies[result_id] = {
                                 'status': 'ok',
                                 'latency_ms': int(round(latency_ms)),
                                 'checked_at': checked_at,
                                 'error': '',
+                                'config_revision': config_revision,
                             }
                             self.save_latencies()
                         self.save_state()
@@ -792,12 +796,13 @@ class ProbingMixin:
                         failures = int(self.state.get('auto_check_failures') or 0) + 1
                         self.state['auto_check_failures'] = failures
                         self.state['auto_check_last_error'] = error
-                        if active_check_id:
-                            self.latencies[active_check_id] = {
+                        if result_id:
+                            self.latencies[result_id] = {
                                 'status': 'error',
                                 'latency_ms': None,
                                 'checked_at': checked_at,
                                 'error': error,
+                                'config_revision': config_revision,
                             }
                             self.save_latencies()
                         self.save_state()

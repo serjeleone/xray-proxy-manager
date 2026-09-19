@@ -153,6 +153,7 @@ def test_auto_checker_loop_success_updates_latency_and_schedules_full_scan(
     instance = manager_factory([active])
     instance.active_candidate_id = active.id
     instance.slots["xray-a"].candidate_id = active.id
+    instance.slots["xray-a"].candidate = active
     instance.stop_event = IsSetSequence(False, False, True)
     instance.settings_event = SettingsWait(False)
     instance.auto_check_wait_seconds = lambda: 0
@@ -181,6 +182,7 @@ def test_auto_checker_loop_threshold_triggers_emergency_failover(
     instance = manager_factory([active, failed_backup, working_backup])
     instance.active_candidate_id = active.id
     instance.slots["xray-a"].candidate_id = active.id
+    instance.slots["xray-a"].candidate = active
     instance.state["auto_check_failures"] = instance.auto_check_failures - 1
     instance.stop_event = IsSetSequence(False, False, True)
     instance.settings_event = SettingsWait(False)

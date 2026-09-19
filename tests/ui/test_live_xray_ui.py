@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,48 @@ from test_xray_integration import live_manager, transfer  # noqa: F401: pytest f
 from streaming import streaming_download  # noqa: F401: pytest fixture
 
 pytestmark = pytest.mark.ui
+
+
+def test_auto_check_refreshes_ping_on_running_card_after_subscription_change(
+    page: Page, m, live_manager, monkeypatch,
+):
+    from test_runtime_lifecycle import IsSetSequence, SettingsWait
+
+    instance = live_manager
+    running = instance.candidates[0]
+    instance.candidates[0] = replace(running, config_revision='updated-config')
+    instance.latencies[running.id] = {'status': 'ok', 'latency_ms': 221, 'checked_at': 1}
+    instance.latencies['slot:xray-a'] = {'status': 'ok', 'latency_ms': 379, 'checked_at': 1}
+    monkeypatch.setattr(m.common, 'WEB_ROOT', Path(__file__).parents[2] / 'xray-proxy-manager' / 'web')
+    handler = lambda *args, **kwargs: m.web.WebHandler(instance, *args, **kwargs)
+    server = m.web.ThreadingHTTPServer(('127.0.0.1', 0), handler)
+    serving = threading.Thread(target=server.serve_forever, daemon=True)
+    serving.start()
+    try:
+        page.goto(f'http://127.0.0.1:{server.server_port}/ingress/test/')
+        active_ping = page.locator('.outbound-card.active .ping')
+        replacement_ping = page.locator('.outbound-card').filter(
+            has=page.locator(f'[data-select="{running.id}"]'),
+        ).locator('.ping')
+        expect(active_ping).to_have_text('379 мс')
+        expect(replacement_ping).to_have_text('221 мс')
+
+        with monkeypatch.context() as check:
+            check.setattr(instance, 'stop_event', IsSetSequence(False, False, True))
+            check.setattr(instance, 'settings_event', SettingsWait(False))
+            check.setattr(instance, 'auto_check_wait_seconds', lambda: 0)
+            check.setattr(instance, 'auto_best_check_due', lambda _now: False)
+            check.setattr(instance, 'check_active_tunnel', lambda: (True, 226.0, [], ''))
+            instance.auto_checker_loop()
+
+        # The normal UI polling must update the existing card without a reload.
+        expect(active_ping).to_have_text('226 мс')
+        expect(replacement_ping).to_have_text('221 мс')
+        expect(page.locator('.active-chip')).to_have_count(1)
+    finally:
+        server.shutdown()
+        server.server_close()
+        serving.join(2)
 
 
 def test_visible_faster_excluded_outbound_never_steals_live_selection(page: Page, m, live_manager, monkeypatch):

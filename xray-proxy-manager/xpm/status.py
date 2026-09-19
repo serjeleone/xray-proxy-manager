@@ -128,6 +128,8 @@ class StatusMixin:
                     'observed_outbound_tag': slot.observed_outbound_tag,
                     'observed_outbound_at': slot.observed_outbound_at,
                 }
+            active_card = next((item for item in candidates if item['active']), None)
+            active_latency = active_card['latency'] if active_card else self.latencies.get(effective_id)
             return {
                 'version': xpm_common.ADDON_VERSION,
                 'commit': xpm_common.ADDON_COMMIT,
@@ -136,7 +138,7 @@ class StatusMixin:
                 'xray_version': self.xray_version(),
                 'started_at': self.started_at,
                 'xray_running': process_running,
-                'active': runtime_active_candidate.public(self.latencies.get(runtime_active_candidate.id), True) if runtime_active_candidate else None,
+                'active': runtime_active_candidate.public(active_latency, True) if runtime_active_candidate else None,
                 'selected_active': selected.public(self.latencies.get(selected.id), selected.id == effective_id) if selected else None,
                 'observed_outbound_tag': active_slot.observed_outbound_tag,
                 'observed_outbound_at': active_slot.observed_outbound_at,

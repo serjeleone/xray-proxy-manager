@@ -240,6 +240,18 @@ class SubscriptionMixin:
     def slot_candidate_id(slot_tag: str) -> str:
         return f'slot:{slot_tag}'
 
+    def slot_display_candidate_id(self, slot_tag: str) -> str:
+        """Use the subscription card only if it represents the running config."""
+        running = self.slots[slot_tag].candidate
+        return next(
+            (
+                item.id for item in self.candidates
+                if self.same_candidate_identity(item, running)
+                and self.same_outbound(item, running)
+            ),
+            self.slot_candidate_id(slot_tag),
+        )
+
     def running_slot_by_candidate_id(self, candidate_id: str) -> xpm_models.XraySlot | None:
         if candidate_id.startswith('slot:'):
             slot = self.slots.get(candidate_id.removeprefix('slot:'))

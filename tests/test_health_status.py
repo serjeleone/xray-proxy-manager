@@ -300,6 +300,62 @@ def test_status_does_not_mark_changed_excluded_profile_as_running(manager_factor
     assert payload["blue_green"]["slots"]["xray-a"]["display_candidate_id"] == "slot:xray-a"
 
 
+@pytest.mark.parametrize('subscription_state', ['unchanged', 'changed', 'removed', 'changes_during_probe'])
+@pytest.mark.parametrize('success', [True, False])
+def test_auto_check_updates_the_running_card_without_overwriting_replacement(
+    manager_factory, candidate_factory, subscription_state, success,
+):
+    from test_runtime_lifecycle import IsSetSequence, SettingsWait
+
+    running = replace(candidate_factory('stable-id'), config_revision='running-revision')
+    replacement = replace(running, config_revision='new-revision')
+    instance = manager_factory([running])
+    slot = instance.slots['xray-a']
+    slot.process = DummyProcess()
+    slot.candidate = running
+    slot.candidate_id = running.id
+    # A removed outbound can lack a selected subscription ID altogether.
+    instance.active_candidate_id = '' if subscription_state == 'removed' else running.id
+    if subscription_state == 'changed':
+        instance.candidates = [replacement]
+    elif subscription_state == 'removed':
+        instance.candidates = []
+    old_subscription_result = {'status': 'ok', 'latency_ms': 221, 'checked_at': 1}
+    old_slot_result = {'status': 'ok', 'latency_ms': 379, 'checked_at': 1}
+    instance.latencies = {running.id: dict(old_subscription_result), 'slot:xray-a': dict(old_slot_result)}
+    instance.stop_event = IsSetSequence(False, False, True)
+    instance.settings_event = SettingsWait(False)
+    instance.auto_check_wait_seconds = lambda: 0
+    instance.auto_best_check_due = lambda _now: False
+    instance.check_draining_slots_health = lambda: None
+
+    def probe():
+        active = next(item for item in instance.status_payload()['candidates'] if item['active'])
+        assert active['checking']
+        if subscription_state == 'changes_during_probe':
+            instance.candidates = [replacement]
+        return success, 226.0 if success else None, [], '' if success else 'timeout'
+
+    instance.check_active_tunnel = probe
+    instance.auto_checker_loop()
+
+    payload = instance.status_payload()
+    active = next(item for item in payload['candidates'] if item['active'])
+    result = active['latency']
+    assert result['status'] == ('ok' if success else 'error')
+    assert result['latency_ms'] == (226 if success else None)
+    assert result['checked_at'] > 1
+    assert result['config_revision'] == running.config_revision
+    assert payload['active']['latency'] == result
+    assert instance.latency_checking_ids == set()
+    if subscription_state == 'unchanged':
+        assert active['id'] == running.id
+        assert instance.latencies['slot:xray-a'] == old_slot_result
+    else:
+        assert active['id'] == 'slot:xray-a'
+        assert instance.latencies[running.id] == old_subscription_result
+
+
 def test_status_keeps_faster_excluded_duplicate_separate(manager_factory, candidate_factory):
     running = candidate_factory("running", name="Running Finland", fingerprint="same")
     excluded = candidate_factory("excluded", name="Blocked duplicate", fingerprint="same")
