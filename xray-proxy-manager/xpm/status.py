@@ -137,6 +137,7 @@ class StatusMixin:
                 'release_notes': xpm_common.release_notes_payload(),
                 'xray_version': self.xray_version(),
                 'started_at': self.started_at,
+                'switch_history': self.switch_history.payload(),
                 'xray_running': process_running,
                 'active': runtime_active_candidate.public(active_latency, True) if runtime_active_candidate else None,
                 'selected_active': selected.public(self.latencies.get(selected.id), selected.id == effective_id) if selected else None,

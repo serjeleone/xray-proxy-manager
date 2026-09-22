@@ -961,3 +961,39 @@ body.modal-open { overflow: hidden; }
     text-box: normal;
   }
 }
+
+/* The two complementary masks only replace the status text, never the header
+   or action buttons. Both layers reveal the existing card background. */
+.hero-info-stage { position: relative; flex: 1 0 auto; min-width: 0; overflow: hidden; }
+.hero-info-text { display: flex; flex-direction: column; gap: 4px; }
+.outbound-history-toggle {
+  display: block; width: 100%; padding: 0; border: 0; border-radius: 3px;
+  background: none; color: inherit; font: inherit; letter-spacing: inherit;
+  line-height: inherit; text-align: left; cursor: pointer;
+}
+.outbound-history-toggle::after { display: none; }
+.outbound-history-toggle:focus-visible { outline-offset: -2px; }
+.switch-history {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  visibility: hidden; pointer-events: none; background: transparent;
+}
+.switch-history[aria-hidden="false"] { pointer-events: auto; }
+.switch-history-title {
+  flex: 0 0 auto; height: var(--switch-status-height, 20px);
+  padding-left: 17px;
+}
+.switch-history-chart { display: block; width: 100%; flex: 1 1 0; min-height: 0; overflow: hidden; }
+.switch-history-chart .chart-grid { stroke: rgba(255,255,255,.10); stroke-dasharray: 3 4; }
+.switch-history-chart .chart-axis { stroke: rgba(255,255,255,.18); }
+.switch-history-chart text { fill: var(--muted); font-family: inherit; font-size: 10px; }
+.switch-history-chart .chart-line { fill: none; stroke: var(--spotify); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+.switch-history-chart .chart-point { fill: var(--spotify); }
+.switch-history-tooltip {
+  position: absolute; z-index: 1; left: 50%; top: 24px; transform: translateX(-50%);
+  max-width: calc(100% - 8px); padding: 4px 8px; border: 1px solid var(--line-strong);
+  border-radius: 6px; background: #242424; color: var(--text);
+  font-size: .68rem; pointer-events: none; white-space: nowrap;
+}
+@media (max-width: 470px) {
+  .switch-history-chart text { font-size: 9px; }
+}

@@ -154,6 +154,8 @@ class SwitchingMixin:
         expected_manual_generation: int | None = None,
     ) -> None:
         expected_slot = self.active_slot_tag if self.dual_slot_enabled else 'xray-a'
+        previous_slot = self.slots.get(self.active_slot_tag)
+        previous_candidate = (previous_slot.candidate if previous_slot else None) or self.candidate_by_id(self.active_candidate_id)
         if expected_slot not in xpm_common.SLOT_TAGS:
             expected_slot = 'xray-a'
         self.active_slot_tag = expected_slot
@@ -215,6 +217,7 @@ class SwitchingMixin:
             self.state['last_switch_at'] = xpm_common.now_ts()
             self.state['last_switch_reason'] = reason
             self.state['last_switch_source'] = source
+            self.record_outbound_change(previous_candidate, candidate, self.state['last_switch_at'])
             self.state['auto_check_failures'] = 0
             self.state['auto_check_last_error'] = ''
             self.latencies[candidate.id] = {
@@ -357,6 +360,7 @@ class SwitchingMixin:
                 # already switched selector, so exception cleanup must never stop
                 # the new active process.
                 state_committed = True
+                self.record_outbound_change(active_candidate, candidate, switched_at)
                 self.switch_generation += 1
                 generation = self.switch_generation
                 standby.draining = False
@@ -451,6 +455,7 @@ class SwitchingMixin:
                     with self.lock:
                         self.active_slot_tag = standby_tag
                         self.active_candidate_id = candidate.id
+                        self.record_outbound_change(active_candidate, candidate)
                         self.switch_generation += 1
                         old_slot = self.slots[old_slot_tag]
                         old_slot.draining = old_slot.running()
@@ -569,6 +574,7 @@ class SwitchingMixin:
                 self.state['auto_check_failures'] = 0
                 self.state['auto_check_last_error'] = ''
                 state_committed = True
+                self.record_outbound_change(failed_slot.candidate, rollback_candidate, switched_at)
                 self.save_state()
             try:
                 self.save_active_config(rollback_slot_tag, rollback_candidate)
@@ -757,6 +763,7 @@ class SwitchingMixin:
                 self.active_slot_tag = slot_tag
                 self.active_candidate_id = candidate.id
                 state_committed = True
+                self.record_outbound_change(old_candidate, candidate, switched_at)
                 self.switch_generation += 1
                 slot = self.slots[slot_tag]
                 slot.draining = False
@@ -899,6 +906,7 @@ class SwitchingMixin:
                 self.state['last_switch_at'] = xpm_common.now_ts()
                 self.state['last_switch_reason'] = 'automatic rollback after active Xray process exit'
                 self.state['last_switch_source'] = 'active_process_exit'
+                self.record_outbound_change(failed_slot.candidate, rollback_candidate, self.state['last_switch_at'])
                 self.state['auto_check_failures'] = 0
                 self.state['auto_check_last_error'] = ''
                 self.save_state()

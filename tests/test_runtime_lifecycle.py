@@ -374,6 +374,7 @@ def test_rollback_to_running_slot_commits_selector_and_drain_state(
     instance.capture_drain_connection_baseline = baselines.append
 
     assert instance.rollback_to_running_slot(4, "xray-b", "xray-a", rollback, "validation failed") is True
+    assert instance.switch_history.payload()["total"] == 1
     assert selectors == ["xray-a"]
     assert instance.active_slot_tag == "xray-a"
     assert instance.active_candidate_id == rollback.id

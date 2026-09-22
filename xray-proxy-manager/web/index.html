@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=36">
+  <link rel="stylesheet" href="style.css?ui=37">
 </head>
 <body>
   <main class="shell">
@@ -45,22 +45,31 @@
           <svg class="traffic-icon icon-pause" viewBox="0 0 100 100" aria-hidden="true"><rect x="31" y="24" width="12" height="52" rx="3.5" ry="3.5"/><rect x="57" y="24" width="12" height="52" rx="3.5" ry="3.5"/></svg>
           <svg class="traffic-icon icon-error" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7h2v7h-2V7Zm0 9h2v2h-2v-2Z"/></svg>
         </button>
-        <h2 id="activeName">Активный outbound не определён</h2>
+        <h2><button id="switchHistoryToggle" class="outbound-history-toggle" type="button" aria-controls="switchHistory" aria-expanded="false" title="Показать график переключений за 12 часов"><span id="activeName">Активный outbound не определён</span></button></h2>
         <div id="throughputBadge" class="throughput-badge" title="Входящая скорость активного слота"><span id="throughputValue">0.0 МБ/с</span></div>
       </div>
 
       <div class="hero-details">
-        <div class="status-line">
-          <span id="statusDot" class="status-dot"></span>
-          <span id="xrayState">Загрузка…</span>
-        </div>
-        <p id="activeMeta">Ожидание данных</p>
-        <p id="trafficHint" class="traffic-hint">Проверка внешнего правила…</p>
-        <p id="selectorHint" class="traffic-hint">Проверка состояния selector…</p>
-        <div id="routerSetup" class="router-setup hidden">
-          <span>Ключ <code id="routerKeyName">—</code>: добавьте открытую часть в <code>/etc/dropbear/authorized_keys</code>:</span>
-          <code id="routerPublicKey" class="public-key"></code>
-          <button id="copyRouterKey" class="mini-button" type="button">Копировать ключ</button>
+        <div id="heroInfoStage" class="hero-info-stage">
+          <div id="heroInfoText" class="hero-info-text">
+            <div class="status-line">
+              <span id="statusDot" class="status-dot"></span>
+              <span id="xrayState">Загрузка…</span>
+            </div>
+            <p id="activeMeta">Ожидание данных</p>
+            <p id="trafficHint" class="traffic-hint">Проверка внешнего правила…</p>
+            <p id="selectorHint" class="traffic-hint">Проверка состояния selector…</p>
+            <div id="routerSetup" class="router-setup hidden">
+              <span>Ключ <code id="routerKeyName">—</code>: добавьте открытую часть в <code>/etc/dropbear/authorized_keys</code>:</span>
+              <code id="routerPublicKey" class="public-key"></code>
+              <button id="copyRouterKey" class="mini-button" type="button">Копировать ключ</button>
+            </div>
+          </div>
+          <section id="switchHistory" class="switch-history" aria-hidden="true" aria-label="Переключения outbound за 12 часов">
+            <div class="status-line switch-history-title">Переключений (за последние 12 часов):</div>
+            <svg id="switchHistoryChart" class="switch-history-chart" role="img" aria-label="Загрузка статистики переключений"></svg>
+            <div id="switchHistoryTooltip" class="switch-history-tooltip" hidden></div>
+          </section>
         </div>
         <div class="hero-actions">
           <button id="testAllButton" class="button primary" type="button">Проверить все</button>
@@ -288,6 +297,6 @@
     </div>
   </div>
 
-  <script src="app.js?ui=29"></script>
+  <script src="app.js?ui=30"></script>
 </body>
 </html>

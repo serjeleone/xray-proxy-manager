@@ -567,3 +567,55 @@ def test_api_error_is_visible_to_user(page: Page, web_app_html: str) -> None:
     page.route("**/api/**", failing_handler)
     page.locator("#testAllButton").click()
     expect(page.locator("#toast")).to_contain_text("Ошибка: probe failed")
+
+
+def history_payload(count=1):
+    end = 1_800_000_123
+    start = end - 43200
+    buckets = [
+        {'start': max(start, ts), 'end': min(end, ts + 300), 'count': 0}
+        for ts in range(start // 300 * 300, end // 300 * 300 + 1, 300)
+    ]
+    buckets[-1]['count'] = count
+    return {'start': start, 'end': end, 'bucket_seconds': 300, 'total': count, 'buckets': buckets}
+
+
+@pytest.mark.parametrize('width', [320, 430, 1440])
+def test_switch_chart_replaces_only_status_region_without_layout_shift(page, web_app_html, width):
+    page.set_viewport_size({'width': width, 'height': 1000})
+    payload = base_payload()
+    payload['switch_history'] = history_payload()
+    open_app(page, web_app_html, payload)
+    before = page.locator('.hero-actions').bounding_box()
+    original = page.locator('#heroInfoText .status-line').bounding_box()
+    toggle = page.locator('#switchHistoryToggle')
+    toggle.click()
+    expect(toggle).to_have_attribute('aria-expanded', 'true')
+    expect(page.locator('#heroInfoText')).to_have_css('visibility', 'hidden')
+    assert page.locator('.hero-actions').bounding_box() == before
+    title = page.locator('.switch-history-title').bounding_box()
+    assert title['y'] == original['y']
+    assert title['height'] == original['height']
+    assert page.locator('.switch-history-title').evaluate('(el) => el.scrollWidth <= el.clientWidth')
+    assert page.locator('#switchHistory').evaluate('(el) => getComputedStyle(el).backgroundColor') == 'rgba(0, 0, 0, 0)'
+    expect(page.locator('#switchHistoryChart')).to_have_attribute('aria-label', 'Переключений за последние 12 часов: 1. Интервал — 5 минут.')
+    # The current partial bucket is an actual point at the right edge.
+    assert page.locator('.chart-point').count() == 1
+    toggle.press('Enter')
+    expect(page.locator('#switchHistory')).to_have_css('visibility', 'hidden')
+    assert page.locator('.hero-actions').bounding_box() == before
+
+
+def test_open_switch_chart_updates_and_handles_reduced_motion(page, web_app_html):
+    page.emulate_media(reduced_motion='reduce')
+    payload = base_payload()
+    payload['switch_history'] = history_payload(0)
+    harness = open_app(page, web_app_html, payload)
+    page.locator('#switchHistoryToggle').click()
+    expect(page.locator('#heroInfoText')).to_have_css('visibility', 'hidden')
+    assert page.locator('.chart-point').count() == 0
+    harness.payload['switch_history'] = history_payload(3)
+    expect(page.locator('#switchHistoryChart')).to_have_attribute('aria-label', 'Переключений за последние 12 часов: 3. Интервал — 5 минут.', timeout=5000)
+    assert page.locator('.chart-point').count() == 1
+    page.keyboard.press('Escape')
+    expect(page.locator('#switchHistory')).to_have_css('visibility', 'hidden')

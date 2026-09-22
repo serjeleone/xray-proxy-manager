@@ -279,6 +279,7 @@ def test_blue_green_switch_success_path(m, manager_factory, candidate_factory, m
     assert instance.latencies[new.id]["status"] == "ok"
     assert instance.state["jobs"]["switch"]["running"] is False
     assert instance.state["last_switch_source"] == "manual_ui"
+    assert instance.switch_history.payload()["total"] == 1
 
 
 def test_blue_green_switch_rejects_wrong_mode_or_unavailable_selector(m, manager_factory, candidate_factory):
@@ -320,6 +321,7 @@ def test_single_slot_switch_success_and_rollback(m, manager_factory, candidate_f
     assert instance.active_candidate_id == new.id
     assert instance.latencies[new.id]["latency_ms"] == 25
     assert instance.state["last_switch_source"] == "manual_ui"
+    assert instance.switch_history.payload()["total"] == 1
 
 
 def test_local_tcp_connection_count_reads_proc_tables(m, manager_factory, monkeypatch, tmp_path):

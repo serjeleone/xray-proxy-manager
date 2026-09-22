@@ -307,6 +307,7 @@ class SelectorMixin:
         with self.lock:
             previous_slot_tag = self.active_slot_tag
             current_slot = self.slots[current]
+            self.record_outbound_change(self.slots[previous_slot_tag].candidate, current_slot.candidate)
             self.active_slot_tag = current
             self.active_candidate_id = current_slot.candidate_id
             current_slot.draining = False
@@ -361,6 +362,7 @@ class SelectorMixin:
             if current_running:
                 with self.lock:
                     current_slot = self.slots[current]
+                    self.record_outbound_change(self.slots[expected].candidate, current_slot.candidate)
                     self.active_slot_tag = current
                     self.active_candidate_id = current_slot.candidate_id
                     current_slot.draining = False

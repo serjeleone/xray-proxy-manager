@@ -89,6 +89,7 @@ def manager_factory(m, candidate_factory, tmp_path):
         instance = m.XrayManager.__new__(m.XrayManager)
         instance.options = {}
         instance.lock = threading.RLock()
+        instance.switch_history = m.switch_history.SwitchHistory(tmp_path / 'switch-history.json')
         instance.switch_lock = threading.Lock()
         instance.subscription_apply_lock = threading.Lock()
         instance.router_lock = threading.Lock()

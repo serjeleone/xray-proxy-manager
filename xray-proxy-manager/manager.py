@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs, quote, urlparse
-from xpm import common, config, conversion, drain, errors, identity, models, openwrt, persistence, probing, runtime, selector, settings, stats, status, subscription, switching, web
+from xpm import common, config, conversion, drain, errors, identity, models, openwrt, persistence, probing, runtime, selector, settings, stats, status, subscription, switch_history, switching, web
 
 
 class XrayManager(
@@ -41,6 +41,7 @@ class XrayManager(
     stats.StatsMixin,
     status.StatusMixin,
     subscription.SubscriptionMixin,
+    switch_history.SwitchHistoryMixin,
     switching.SwitchingMixin,
     web.WebMixin,
 ):
@@ -206,6 +207,7 @@ class XrayManager(
             raise RuntimeError(f'ui_port must differ from the reserved watchdog port {common.WATCHDOG_PORT}.')
 
         self.lock = threading.RLock()
+        self.switch_history = switch_history.SwitchHistory(common.WORKDIR / 'switch-history.json')
         self.switch_lock = threading.Lock()
         self.subscription_apply_lock = threading.Lock()
         self.router_lock = threading.Lock()

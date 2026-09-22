@@ -670,7 +670,170 @@ function render(payload) {
     $('jobBanner').classList.add('hidden');
   }
   renderCandidates(payload);
+  renderSwitchHistory();
 }
+
+const switchChart = { open: false, progress: 0, frame: 0, origin: null, geometry: null };
+
+function paintSwitchReveal() {
+  const graph = $('switchHistory');
+  const text = $('heroInfoText');
+  const stage = $('heroInfoStage');
+  const { progress, origin } = switchChart;
+  graph.style.visibility = progress > 0 ? 'visible' : 'hidden';
+  text.style.visibility = progress < 1 ? 'visible' : 'hidden';
+  if (!origin || progress === 0 || progress === 1) {
+    graph.style.maskImage = text.style.maskImage = 'none';
+    graph.style.webkitMaskImage = text.style.webkitMaskImage = 'none';
+    return;
+  }
+  const width = stage.clientWidth;
+  const height = stage.clientHeight;
+  const x = origin.x * width;
+  const y = origin.y;
+  const feather = 10;
+  const radius = progress * (Math.max(...[0, width].flatMap((cx) =>
+    [0, height].map((cy) => Math.hypot(cx - x, cy - y)))) + feather);
+  const inner = Math.max(0, radius - feather / 2);
+  const outer = Math.max(0, radius + feather / 2);
+  // Exact inverse alpha: the underlying text disappears with the same front.
+  graph.style.maskImage = graph.style.webkitMaskImage =
+    `radial-gradient(circle at ${x}px ${y}px, #000 ${inner}px, transparent ${outer}px)`;
+  text.style.maskImage = text.style.webkitMaskImage =
+    `radial-gradient(circle at ${x}px ${y}px, transparent ${inner}px, #000 ${outer}px)`;
+  // The normal text can be shorter than the stage on desktop. Use the same
+  // coordinate space for both masks without changing its layout.
+  text.style.maskSize = text.style.webkitMaskSize = `${width}px ${height}px`;
+  text.style.maskRepeat = text.style.webkitMaskRepeat = 'no-repeat';
+}
+
+function toggleSwitchHistory(event) {
+  const stage = $('heroInfoStage').getBoundingClientRect();
+  const button = $('switchHistoryToggle').getBoundingClientRect();
+  // Reversing in flight keeps the existing origin and radius continuous.
+  if (!switchChart.frame || !switchChart.origin) {
+    const pointer = event?.detail > 0;
+    switchChart.origin = {
+      x: ((pointer ? event.clientX : button.left + button.width / 2) - stage.left) / stage.width,
+      y: (pointer ? event.clientY : button.top + button.height / 2) - stage.top,
+    };
+  }
+  switchChart.open = !switchChart.open;
+  $('switchHistoryToggle').setAttribute('aria-expanded', String(switchChart.open));
+  $('switchHistoryToggle').title = switchChart.open ? 'Скрыть график переключений' : 'Показать график переключений за 12 часов';
+  $('switchHistory').setAttribute('aria-hidden', String(!switchChart.open));
+  $('heroInfoText').inert = switchChart.open;
+  $('heroInfoText').setAttribute('aria-hidden', String(switchChart.open));
+  $('switchHistoryTooltip').hidden = true;
+  renderSwitchHistory();
+  cancelAnimationFrame(switchChart.frame);
+  const from = switchChart.progress;
+  const target = switchChart.open ? 1 : 0;
+  const start = performance.now();
+  const duration = (switchChart.open ? 650 : 540) * Math.abs(target - from);
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const step = (now) => {
+    const t = reduced || duration === 0 ? 1 : Math.min(1, (now - start) / duration);
+    // Fast expanding wave with a soft finish, like a screen unlock.
+    const eased = 1 - Math.pow(1 - t, 3);
+    switchChart.progress = from + (target - from) * eased;
+    paintSwitchReveal();
+    switchChart.frame = t < 1 ? requestAnimationFrame(step) : 0;
+  };
+  switchChart.frame = requestAnimationFrame(step);
+}
+
+function renderSwitchHistory() {
+  const svg = $('switchHistoryChart');
+  const history = state.payload?.switch_history;
+  const width = svg.clientWidth;
+  const height = svg.clientHeight;
+  if (!width || !height) return;
+  const statusHeight = $('heroInfoText').querySelector('.status-line').getBoundingClientRect().height;
+  $('heroInfoStage').style.setProperty('--switch-status-height', `${statusHeight}px`);
+  const ns = 'http://www.w3.org/2000/svg';
+  const make = (name, attrs = {}, text) => {
+    const node = document.createElementNS(ns, name);
+    Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, String(value)));
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const buckets = Array.isArray(history?.buckets) ? history.buckets : [];
+  const peak = Math.max(0, ...buckets.map((bucket) => bucket.count));
+  const step = Math.max(1, Math.ceil(peak / 3));
+  const max = Math.max(3, step * 3);
+  const left = Math.max(19, String(max).length * 7 + 8);
+  const right = width - 5;
+  const top = 7;
+  const bottom = Math.max(top + 8, height - 20);
+  const x = (ts) => left + (ts - history.start) / (history.end - history.start) * (right - left);
+  const y = (count) => bottom - count / max * (bottom - top);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('aria-label', history
+    ? `Переключений за последние 12 часов: ${history.total}. Интервал — 5 минут.`
+    : 'Статистика переключений недоступна');
+  svg.replaceChildren();
+  const defs = make('defs');
+  const gradient = make('linearGradient', { id: 'switchChartFill', x1: 0, y1: 0, x2: 0, y2: 1 });
+  gradient.append(make('stop', { offset: '0%', 'stop-color': 'var(--spotify)', 'stop-opacity': .25 }),
+    make('stop', { offset: '100%', 'stop-color': 'var(--spotify)', 'stop-opacity': .015 }));
+  defs.append(gradient);
+  svg.append(defs);
+  for (let i = 0; i <= 3; i++) {
+    const count = i * step;
+    const cy = y(count);
+    svg.append(make('line', { x1: left, x2: right, y1: cy, y2: cy, class: i ? 'chart-grid' : 'chart-axis' }),
+      make('text', { x: left - 7, y: cy, 'text-anchor': 'end', 'dominant-baseline': 'middle' }, count));
+  }
+  const labels = ['12ч назад', '9ч', '6ч', '3ч', 'сейчас'];
+  labels.forEach((label, i) => {
+    const cx = left + (right - left) * i / 4;
+    svg.append(make('line', { x1: cx, x2: cx, y1: top, y2: bottom, class: 'chart-grid' }));
+    const tick = make('text', { x: i === 0 ? 0 : (i === 4 ? width : cx), y: height - 4,
+      'text-anchor': i === 0 ? 'start' : (i === 4 ? 'end' : 'middle') }, label);
+    if (history) tick.append(make('title', {}, formatDateTime(history.start + i * 10800)));
+    svg.append(tick);
+  });
+  if (!history || !buckets.length) {
+    svg.append(make('text', { x: width / 2, y: (top + bottom) / 2, 'text-anchor': 'middle' },
+      'Статистика недоступна'));
+    switchChart.geometry = null;
+    return;
+  }
+  const points = buckets.map((bucket, i) => ({
+    x: x(i === 0 ? history.start : (i === buckets.length - 1 ? history.end : (bucket.start + bucket.end) / 2)),
+    y: y(bucket.count), count: bucket.count,
+  }));
+  // Straight segments preserve the exact counts: no spline overshoot below 0
+  // or smoothing that would hide a switch in the still-open current bucket.
+  const line = points.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ');
+  svg.append(make('path', { d: `${line} L${right},${bottom} L${left},${bottom} Z`, fill: 'url(#switchChartFill)' }),
+    make('path', { d: line, class: 'chart-line' }));
+  points.forEach((p, i) => {
+    if (!p.count) return;
+    const dot = make('circle', { cx: p.x, cy: p.y, r: 2.1, class: 'chart-point' });
+    dot.append(make('title', {}, switchBucketLabel(buckets[i])));
+    svg.append(dot);
+  });
+  switchChart.geometry = { left, right, history };
+}
+
+function switchBucketLabel(bucket) {
+  const clock = (ts) => new Date(ts * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  return `${clock(bucket.start)}–${clock(bucket.end)} · переключений: ${bucket.count}`;
+}
+
+function inspectSwitchHistory(event) {
+  const geometry = switchChart.geometry;
+  if (!geometry || !switchChart.open || switchChart.frame) return;
+  const rect = $('switchHistoryChart').getBoundingClientRect();
+  const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left - geometry.left) / (geometry.right - geometry.left)));
+  const timestamp = geometry.history.start + fraction * (geometry.history.end - geometry.history.start);
+  const bucket = geometry.history.buckets.find((item) => timestamp < item.end) || geometry.history.buckets.at(-1);
+  $('switchHistoryTooltip').textContent = switchBucketLabel(bucket);
+  $('switchHistoryTooltip').hidden = false;
+}
+
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1242,6 +1405,16 @@ function scheduleFilterSave() {
   }, 500);
 }
 
+$('switchHistoryToggle').addEventListener('click', toggleSwitchHistory);
+$('switchHistoryChart').addEventListener('pointermove', inspectSwitchHistory);
+$('switchHistoryChart').addEventListener('pointerdown', inspectSwitchHistory);
+$('switchHistoryChart').addEventListener('pointerleave', () => { $('switchHistoryTooltip').hidden = true; });
+const switchChartResize = new ResizeObserver(() => {
+  renderSwitchHistory();
+  paintSwitchReveal();
+});
+switchChartResize.observe($('heroInfoStage'));
+switchChartResize.observe($('switchHistoryChart'));
 $('versionBadge').addEventListener('click', toggleChangelog);
 $('closeChangelogButton').addEventListener('click', (event) => { event.stopPropagation(); closeChangelog(); });
 $('logsButton').addEventListener('click', openLogs);
@@ -1280,6 +1453,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   if (state.logsOpen) closeLogs();
   else if (state.changelogOpen) closeChangelog();
+  else if (switchChart.open) toggleSwitchHistory();
 });
 $('testAllButton').addEventListener('click', () => testCandidates());
 $('refreshButton').addEventListener('click', refreshSubscription);
