@@ -443,6 +443,9 @@ class SubscriptionMixin:
                         attempts.append(candidate)
 
         for index, candidate in enumerate(attempts):
+            with self.lock:
+                slot = self.slots[self.active_slot_tag if self.dual_slot_enabled else 'xray-a']
+                previous_slot_candidate = (slot.candidate, slot.candidate_id, slot.candidate_name)
             try:
                 self.start_initial_candidate(
                     candidate,
@@ -454,6 +457,10 @@ class SubscriptionMixin:
                 # start_initial_candidate has already stopped the failed process.
                 # A stale cached ping is not evidence that the whole new list is bad.
                 with self.lock:
+                    # Failed validation never made this candidate active. Restore
+                    # its predecessor so a retry does not record a fictitious switch.
+                    if not slot.running():
+                        slot.candidate, slot.candidate_id, slot.candidate_name = previous_slot_candidate
                     self.latencies[candidate.id] = {
                         'status': 'error',
                         'latency_ms': None,

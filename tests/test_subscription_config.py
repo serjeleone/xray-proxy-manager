@@ -478,6 +478,7 @@ def test_startup_retries_remembered_outbound_from_new_subscription(
     assert instance.latencies[by_tag["italy"].id]["status"] == "error"
     assert instance.latencies[by_tag["brazil"].id]["latency_ms"] == 304
     assert saved == [by_tag["brazil"].id]
+    assert instance.switch_history.payload()["total"] == 0
     assert instance.subscription == fresh
     assert json.loads(isolated_paths.SUBSCRIPTION_PATH.read_text()) == fresh
     assert instance.state["subscription_error"] == ""
