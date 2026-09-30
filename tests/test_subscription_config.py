@@ -396,7 +396,8 @@ def test_subscription_attempt_messages_are_live_numbered_and_reset(m, manager_fa
     assert instance.status_payload()["subscription"]["attempt_messages"] == []
 
 
-def test_successful_subscription_apply_clears_attempt_messages(manager_factory):
+def test_successful_subscription_apply_clears_attempt_messages(m, manager_factory, isolated_paths, monkeypatch):
+    monkeypatch.setattr(m.common, "SUBSCRIPTION_PATH", isolated_paths.SUBSCRIPTION_PATH)
     instance = manager_factory()
     instance.state["subscription_attempt_messages"] = ["Ошибка соединения. (1)"]
     instance.start_initial_candidate = lambda *args, **kwargs: None
