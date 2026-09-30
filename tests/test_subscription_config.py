@@ -54,7 +54,7 @@ def test_download_subscription_falls_back_to_running_slots(m, manager_factory):
         def poll(self): return None
     instance.slots["xray-a"].process = Process()
     calls = []
-    def download(slot=None, **kwargs):
+    def download(slot=None):
         calls.append(slot)
         if slot is None:
             raise RuntimeError("direct down")
@@ -298,42 +298,6 @@ def test_save_active_and_clone_missing_config_fail(m, manager_factory, candidate
         instance.clone_slot_config("xray-a", "xray-b")
 
 
-def test_subscription_download_timeout_budget(m, manager_factory, monkeypatch):
-    from xpm import subscription
-    instance = manager_factory()
-    class Process:
-        def poll(self): return None
-    instance.slots["xray-a"].process = Process()
-    ticks = iter([100, 104])
-    monkeypatch.setattr(subscription.time, "monotonic", lambda: next(ticks))
-    calls = []
-    def download(slot=None, **kwargs):
-        calls.append((slot, kwargs))
-        if slot is None:
-            raise RuntimeError("direct down")
-        return [{"ok": True}]
-    instance.download_subscription_once = download
-    assert instance.download_subscription() == [{"ok": True}]
-    assert calls == [(None, {}), ("xray-a", {"timeout": 11})]
-
-
-def test_subscription_download_stops_after_deadline(m, manager_factory, monkeypatch):
-    from xpm import subscription
-    instance = manager_factory()
-    class Process:
-        def poll(self): return None
-    instance.slots["xray-a"].process = Process()
-    ticks = iter([100, 115])
-    monkeypatch.setattr(subscription.time, "monotonic", lambda: next(ticks))
-    calls = []
-    def download(slot=None, **kwargs):
-        calls.append(slot)
-        raise RuntimeError("curl: (28) Connection timed out")
-    instance.download_subscription_once = download
-    with pytest.raises(TimeoutError, match="15 seconds"):
-        instance.download_subscription()
-    assert calls == [None]
-
 
 def test_subscription_curl_has_no_retries_and_15_second_limit(m, manager_factory, monkeypatch):
     instance = manager_factory()
@@ -384,3 +348,23 @@ def test_subscription_status_translates_saved_curl_error(m, manager_factory):
     instance.state["subscription_error"] = "curl: (28) Connection timed out after 20002 milliseconds"
     assert instance.status_payload()["subscription"]["error"].startswith("Превышен интервал")
     assert instance.state["subscription_error"].startswith("curl:")
+
+
+def test_subscription_timeout_still_tries_each_running_slot(m, manager_factory, monkeypatch):
+    instance = manager_factory()
+    class Process:
+        def poll(self): return None
+    for slot in instance.slots.values():
+        slot.process = Process()
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["timeout"] == 15
+        assert command[command.index("--max-time") + 1] == "15"
+        raise subprocess.TimeoutExpired(command, 15)
+    monkeypatch.setattr(m.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="timed out"):
+        instance.download_subscription()
+    assert len(calls) == 3
+    assert "--socks5-hostname" not in calls[0]
+    assert all("--socks5-hostname" in command for command in calls[1:])
