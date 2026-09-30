@@ -154,6 +154,7 @@ class StatusMixin:
                     'total': len(candidates),
                 },
                 'subscription': {
+                    'attempt_messages': list(self.state.get('subscription_attempt_messages') or []),
                     'updated_at': self.state.get('subscription_updated_at'),
                     'last_attempt_at': self.state.get('subscription_last_attempt_at'),
                     'last_success_at': self.state.get('subscription_last_success_at') or self.state.get('subscription_updated_at'),

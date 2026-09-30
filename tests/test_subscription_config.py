@@ -368,3 +368,35 @@ def test_subscription_timeout_still_tries_each_running_slot(m, manager_factory, 
     assert len(calls) == 3
     assert "--socks5-hostname" not in calls[0]
     assert all("--socks5-hostname" in command for command in calls[1:])
+
+
+def test_subscription_attempt_messages_are_live_numbered_and_reset(m, manager_factory):
+    instance = manager_factory()
+    class Process:
+        def poll(self): return None
+    for slot in instance.slots.values():
+        slot.process = Process()
+    messages_seen = []
+    def download(slot=None):
+        messages_seen.append(list(instance.status_payload()["subscription"]["attempt_messages"]))
+        if slot is None:
+            raise subprocess.TimeoutExpired("curl", 15)
+        if slot == instance.active_slot_tag:
+            raise RuntimeError("curl: (6) Could not resolve host")
+        return [{}]
+    instance.download_subscription_once = download
+    assert instance.download_subscription() == [{}]
+    messages = instance.status_payload()["subscription"]["attempt_messages"]
+    assert len(messages) == 3
+    assert messages[0].startswith("Превышен интервал")
+    assert messages[1].startswith("Не удалось определить")
+    assert messages[2] == "Подписка успешно загружена. (3)"
+    assert [item[-3:] for item in messages] == ["(1)", "(2)", "(3)"]
+    assert messages_seen == [[], messages[:1], messages[:2]]
+    lines, _ = m.common.ui_log_snapshot(100)
+    assert all(any(message in line for line in lines) for message in messages)
+    instance.download_subscription_once = lambda slot=None: [{}]
+    instance.download_subscription()
+    assert instance.status_payload()["subscription"]["attempt_messages"] == [
+        "Подписка успешно загружена. (1)"
+    ]

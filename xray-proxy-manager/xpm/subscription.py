@@ -61,11 +61,25 @@ class SubscriptionMixin:
 
     def download_subscription(self) -> list[dict[str, Any]]:
         """Download directly first, then try running slots; each attempt has 15 seconds."""
+        with self.lock:
+            self.state['subscription_attempt_messages'] = []
+            self.save_state()
+
+        def report(message: str, *, error: bool = False) -> None:
+            with self.lock:
+                messages = self.state['subscription_attempt_messages']
+                numbered = f'{message} ({len(messages) + 1})'
+                messages.append(numbered)
+                self.save_state()
+            xpm_common.log(numbered, error=error)
+
         try:
             configs = self.download_subscription_once()
+            report('Подписка успешно загружена.')
             self.debug_log('subscription downloaded directly without a slot proxy')
             return configs
         except Exception as direct_exc:
+            report(xpm_errors.human_subscription_error(direct_exc), error=True)
             errors = [f'direct: {direct_exc}']
             with self.lock:
                 ordered_slots = [self.active_slot_tag] + [
@@ -82,9 +96,11 @@ class SubscriptionMixin:
             for slot_tag in running_slots:
                 try:
                     configs = self.download_subscription_once(slot_tag)
+                    report('Подписка успешно загружена.')
                     xpm_common.log(f'subscription download succeeded through running Xray slot {slot_tag}')
                     return configs
                 except Exception as proxy_exc:
+                    report(xpm_errors.human_subscription_error(proxy_exc), error=True)
                     errors.append(f'{slot_tag}: {proxy_exc}')
             raise RuntimeError('; '.join(errors)) from direct_exc
 

@@ -622,6 +622,9 @@ function render(payload) {
   $('autoCheckerMeta').textContent = `${checker.interval_seconds}/${checker.best_check_interval_seconds} сек. · порог ${checker.failure_threshold} · ошибок ${checker.current_failures}${checkerMode}${bestMode}. ${lastChecks}${lastError}`;
 
   const subscription = payload.subscription || {};
+  const attemptMessages = subscription.attempt_messages || [];
+  $('subscriptionAttemptLog').textContent = attemptMessages.join('\n');
+  $('subscriptionAttemptLog').classList.toggle('hidden', attemptMessages.length === 0);
   const subscriptionFailed = Boolean(subscription.error);
   $('subscriptionState').classList.toggle('error-state', subscriptionFailed);
   $('subscriptionMeta').classList.toggle('error-state', subscriptionFailed);

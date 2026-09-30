@@ -631,3 +631,25 @@ def test_switch_chart_uses_solid_fill_with_line_color(page, web_app_html):
     expect(area).to_have_attribute('fill-opacity', '0.8')
     assert area.evaluate('(el) => getComputedStyle(el).fill') == line.evaluate('(el) => getComputedStyle(el).stroke')
     expect(page.locator('#switchHistoryChart linearGradient')).to_have_count(0)
+
+
+def test_subscription_shows_each_attempt_in_order(page: Page, web_app_html: str) -> None:
+    payload = base_payload()
+    messages = [
+        "Превышен интервал ожидания соединения с сервером. (1)",
+        "Не удалось определить адрес сервера подписки. (2)",
+    ]
+    payload["subscription"]["attempt_messages"] = messages[:1]
+    payload["jobs"]["refresh"]["running"] = True
+    harness = open_app(page, web_app_html, payload)
+    expect(page.locator("#subscriptionAttemptLog")).to_have_text(messages[0])
+    harness.payload["subscription"]["attempt_messages"] = messages
+    page.evaluate("fetchStatus(true)")
+    expect(page.locator("#subscriptionAttemptLog")).to_have_text("\n".join(messages))
+    harness.payload["jobs"]["refresh"]["running"] = False
+    harness.payload["subscription"]["error"] = messages[1]
+    page.evaluate("fetchStatus(true)")
+    expect(page.locator("#subscriptionAttemptLog")).to_have_text("\n".join(messages))
+    harness.payload["subscription"]["attempt_messages"] = []
+    page.evaluate("fetchStatus(true)")
+    expect(page.locator("#subscriptionAttemptLog")).to_be_hidden()
