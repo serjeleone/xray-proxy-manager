@@ -619,3 +619,15 @@ def test_open_switch_chart_updates_and_handles_reduced_motion(page, web_app_html
     assert page.locator('.chart-point').count() == 1
     page.keyboard.press('Escape')
     expect(page.locator('#switchHistory')).to_have_css('visibility', 'hidden')
+
+
+def test_switch_chart_uses_solid_fill_with_line_color(page, web_app_html):
+    payload = base_payload()
+    payload['switch_history'] = history_payload(3)
+    open_app(page, web_app_html, payload)
+    page.locator('#switchHistoryToggle').click()
+    area = page.locator('#switchHistoryChart path').first
+    line = page.locator('#switchHistoryChart .chart-line')
+    expect(area).to_have_attribute('fill-opacity', '0.8')
+    assert area.evaluate('(el) => getComputedStyle(el).fill') == line.evaluate('(el) => getComputedStyle(el).stroke')
+    expect(page.locator('#switchHistoryChart linearGradient')).to_have_count(0)

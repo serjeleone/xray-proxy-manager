@@ -7,20 +7,20 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
-from . import common as xpm_common, config as xpm_config, conversion as xpm_conversion, identity as xpm_identity, models as xpm_models, persistence as xpm_persistence
+from . import common as xpm_common, config as xpm_config, conversion as xpm_conversion, errors as xpm_errors, identity as xpm_identity, models as xpm_models, persistence as xpm_persistence
 
 
 class SubscriptionMixin:
-    def download_subscription_once(self, proxy_slot: str | None = None) -> list[dict[str, Any]]:
+    def download_subscription_once(self, proxy_slot: str | None = None, *, timeout: float = 15) -> list[dict[str, Any]]:
         with tempfile.NamedTemporaryFile(prefix='subscription.', suffix='.json', delete=False) as temp_file:
             temp_path = Path(temp_file.name)
         try:
             command = [
-                xpm_common.CURL_BIN, '-fSL', '--connect-timeout', '20', '--max-time', '90',
-                '--retry', '2', '--retry-delay', '2', '--retry-all-errors',
+                xpm_common.CURL_BIN, '-fsSL', '--connect-timeout', str(timeout), '--max-time', str(timeout),
                 '-A', self.user_agent,
             ]
             environment = os.environ.copy()
@@ -41,7 +41,7 @@ class SubscriptionMixin:
                     command.extend(['--proxy-user', f'{self.proxy_username}:{self.proxy_password}'])
             command.extend([self.subscription_url, '-o', str(temp_path)])
             result = subprocess.run(
-                command, capture_output=True, text=True, timeout=110, env=environment
+                command, capture_output=True, text=True, timeout=timeout, env=environment
             )
             if result.returncode != 0:
                 raise RuntimeError((result.stderr or result.stdout or 'curl failed').strip())
@@ -61,7 +61,8 @@ class SubscriptionMixin:
             temp_path.unlink(missing_ok=True)
 
     def download_subscription(self) -> list[dict[str, Any]]:
-        """Download directly first, then fall back to already running Xray slots."""
+        """Download directly and through running slots within one 15-second budget."""
+        deadline = time.monotonic() + 15
         try:
             configs = self.download_subscription_once()
             self.debug_log('subscription downloaded directly without a slot proxy')
@@ -81,8 +82,11 @@ class SubscriptionMixin:
                 error=True,
             )
             for slot_tag in running_slots:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('subscription download timed out after 15 seconds') from direct_exc
                 try:
-                    configs = self.download_subscription_once(slot_tag)
+                    configs = self.download_subscription_once(slot_tag, timeout=remaining)
                     xpm_common.log(f'subscription download succeeded through running Xray slot {slot_tag}')
                     return configs
                 except Exception as proxy_exc:
@@ -570,14 +574,14 @@ class SubscriptionMixin:
                 error = self.state.get('subscription_error', '')
                 count = len(self.candidates)
             if error:
-                message = f'Подписка не обновлена: {error}'
+                message = f'Подписка не обновлена: {xpm_errors.human_subscription_error(error)}'
                 xpm_common.log(f'manual subscription refresh failed; cached subscription retained: {error}', error=True)
             else:
                 message = 'Подписка обновлена'
                 xpm_common.log(f'manual subscription refresh completed: {count} outbounds')
         except Exception as exc:
             xpm_common.log(f'manual subscription refresh failed: {exc}', error=True)
-            message = f'Ошибка: {exc}'
+            message = f'Ошибка: {xpm_errors.human_subscription_error(exc)}'
         finally:
             with self.lock:
                 # A manual refresh starts a new subscription-update interval even

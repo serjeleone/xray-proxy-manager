@@ -773,12 +773,6 @@ function renderSwitchHistory() {
     ? `Переключений за последние 12 часов: ${history.total}. Интервал — 5 минут.`
     : 'Статистика переключений недоступна');
   svg.replaceChildren();
-  const defs = make('defs');
-  const gradient = make('linearGradient', { id: 'switchChartFill', x1: 0, y1: 0, x2: 0, y2: 1 });
-  gradient.append(make('stop', { offset: '0%', 'stop-color': 'var(--spotify)', 'stop-opacity': .25 }),
-    make('stop', { offset: '100%', 'stop-color': 'var(--spotify)', 'stop-opacity': .015 }));
-  defs.append(gradient);
-  svg.append(defs);
   for (let i = 0; i <= 3; i++) {
     const count = i * step;
     const cy = y(count);
@@ -807,7 +801,7 @@ function renderSwitchHistory() {
   // Straight segments preserve the exact counts: no spline overshoot below 0
   // or smoothing that would hide a switch in the still-open current bucket.
   const line = points.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ');
-  svg.append(make('path', { d: `${line} L${right},${bottom} L${left},${bottom} Z`, fill: 'url(#switchChartFill)' }),
+  svg.append(make('path', { d: `${line} L${right},${bottom} L${left},${bottom} Z`, fill: 'var(--spotify)', 'fill-opacity': .8 }),
     make('path', { d: line, class: 'chart-line' }));
   points.forEach((p, i) => {
     if (!p.count) return;

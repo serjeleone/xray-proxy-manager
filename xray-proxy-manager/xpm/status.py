@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from typing import Any
-from . import common as xpm_common
+from . import common as xpm_common, errors as xpm_errors
 
 
 class StatusMixin:
@@ -158,7 +158,8 @@ class StatusMixin:
                     'last_attempt_at': self.state.get('subscription_last_attempt_at'),
                     'last_success_at': self.state.get('subscription_last_success_at') or self.state.get('subscription_updated_at'),
                     'last_error_at': self.state.get('subscription_last_error_at'),
-                    'error': self.state.get('subscription_error') or '',
+                    'error': xpm_errors.human_subscription_error(self.state['subscription_error'])
+                    if self.state.get('subscription_error') else '',
                     'consecutive_failures': int(
                         self.state.get('subscription_consecutive_failures') or 0
                     ),

@@ -54,7 +54,7 @@ def test_download_subscription_falls_back_to_running_slots(m, manager_factory):
         def poll(self): return None
     instance.slots["xray-a"].process = Process()
     calls = []
-    def download(slot=None):
+    def download(slot=None, **kwargs):
         calls.append(slot)
         if slot is None:
             raise RuntimeError("direct down")
@@ -256,7 +256,8 @@ def test_manual_refresh_logs_actual_outcome(m, manager_factory, isolated_paths, 
     lines, _ = m.common.ui_log_snapshot(100)
     assert any('manual subscription refresh started' in line for line in lines)
     if error:
-        assert error in instance.state['jobs']['refresh']['message']
+        from xpm.errors import human_subscription_error
+        assert human_subscription_error(error) in instance.state['jobs']['refresh']['message']
         assert not any('manual subscription refresh completed' in line for line in lines)
     else:
         assert any('manual subscription refresh completed' in line for line in lines)
@@ -295,3 +296,91 @@ def test_save_active_and_clone_missing_config_fail(m, manager_factory, candidate
         instance.save_active_config("xray-a", candidate)
     with pytest.raises(RuntimeError, match="Cannot clone"):
         instance.clone_slot_config("xray-a", "xray-b")
+
+
+def test_subscription_download_timeout_budget(m, manager_factory, monkeypatch):
+    from xpm import subscription
+    instance = manager_factory()
+    class Process:
+        def poll(self): return None
+    instance.slots["xray-a"].process = Process()
+    ticks = iter([100, 104])
+    monkeypatch.setattr(subscription.time, "monotonic", lambda: next(ticks))
+    calls = []
+    def download(slot=None, **kwargs):
+        calls.append((slot, kwargs))
+        if slot is None:
+            raise RuntimeError("direct down")
+        return [{"ok": True}]
+    instance.download_subscription_once = download
+    assert instance.download_subscription() == [{"ok": True}]
+    assert calls == [(None, {}), ("xray-a", {"timeout": 11})]
+
+
+def test_subscription_download_stops_after_deadline(m, manager_factory, monkeypatch):
+    from xpm import subscription
+    instance = manager_factory()
+    class Process:
+        def poll(self): return None
+    instance.slots["xray-a"].process = Process()
+    ticks = iter([100, 115])
+    monkeypatch.setattr(subscription.time, "monotonic", lambda: next(ticks))
+    calls = []
+    def download(slot=None, **kwargs):
+        calls.append(slot)
+        raise RuntimeError("curl: (28) Connection timed out")
+    instance.download_subscription_once = download
+    with pytest.raises(TimeoutError, match="15 seconds"):
+        instance.download_subscription()
+    assert calls == [None]
+
+
+def test_subscription_curl_has_no_retries_and_15_second_limit(m, manager_factory, monkeypatch):
+    instance = manager_factory()
+    def run(command, **kwargs):
+        assert command[command.index("--connect-timeout") + 1] == "15"
+        assert command[command.index("--max-time") + 1] == "15"
+        assert "--retry" not in command
+        assert kwargs["timeout"] == 15
+        Path(command[-1]).write_text("{}")
+        return subprocess.CompletedProcess(command, 0, "", "")
+    monkeypatch.setattr(m.subprocess, "run", run)
+    assert instance.download_subscription_once() == [{}]
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("curl: (28) Connection timed out after 20002 milliseconds", "Превышен интервал"),
+    (subprocess.TimeoutExpired("curl", 15), "Превышен интервал"),
+    (TimeoutError("deadline"), "Превышен интервал"),
+    ("curl: (6) Could not resolve host", "Не удалось определить"),
+    ("curl: (60) certificate problem", "Не удалось проверить сертификат"),
+    ("curl: (35) SSL connect error", "Не удалось установить защищённое"),
+    ("curl: (67) Authentication failed", "Не удалось пройти авторизацию"),
+    ("curl: (7) Failed to connect", "Не удалось подключиться"),
+    ("curl: (97) SOCKS5 failed", "Не удалось загрузить подписку через прокси"),
+    ("curl: (52) Empty reply", "Сервер подписки не прислал ответ"),
+    ("curl: (56) Recv failure", "Соединение с сервером подписки было прервано"),
+    ("curl: (3) URL rejected", "Некорректная ссылка"),
+    ("curl: (47) Maximum redirects followed", "Сервер подписки перенаправляет"),
+    ("Expecting value: line 1 column 1 (char 0)", "Сервер вернул подписку в неподдерживаемом формате"),
+    ("curl: (22) The requested URL returned error: 401", "Сервер отклонил доступ"),
+    ("curl: (22) The requested URL returned error: 403", "Сервер отклонил доступ"),
+    ("curl: (22) The requested URL returned error: 404", "Подписка не найдена"),
+    ("curl: (22) The requested URL returned error: 429", "Слишком много запросов"),
+    ("curl: (22) The requested URL returned error: 503", "Сервер подписки вернул ошибку"),
+    ("offline", "Не удалось обновить подписку"),
+    ("Загруженную подписку не удалось применить.", "Загруженную подписку не удалось применить."),
+])
+def test_human_subscription_errors(raw, expected):
+    from xpm.errors import human_subscription_error
+    message = human_subscription_error(raw)
+    assert message.startswith(expected)
+    assert "curl:" not in message
+    assert human_subscription_error(message) == message
+
+
+def test_subscription_status_translates_saved_curl_error(m, manager_factory):
+    instance = manager_factory()
+    instance.state["subscription_error"] = "curl: (28) Connection timed out after 20002 milliseconds"
+    assert instance.status_payload()["subscription"]["error"].startswith("Превышен интервал")
+    assert instance.state["subscription_error"].startswith("curl:")
