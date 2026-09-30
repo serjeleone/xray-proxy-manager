@@ -370,6 +370,7 @@ def test_subscription_timeout_still_tries_each_running_slot(m, manager_factory, 
     assert all("--socks5-hostname" in command for command in calls[1:])
 
 
+
 def test_subscription_attempt_messages_are_live_numbered_and_reset(m, manager_factory):
     instance = manager_factory()
     class Process:
@@ -379,24 +380,30 @@ def test_subscription_attempt_messages_are_live_numbered_and_reset(m, manager_fa
     messages_seen = []
     def download(slot=None):
         messages_seen.append(list(instance.status_payload()["subscription"]["attempt_messages"]))
-        if slot is None:
-            raise subprocess.TimeoutExpired("curl", 15)
-        if slot == instance.active_slot_tag:
-            raise RuntimeError("curl: (6) Could not resolve host")
-        return [{}]
+        raise subprocess.TimeoutExpired("curl", 15)
     instance.download_subscription_once = download
-    assert instance.download_subscription() == [{}]
+    with pytest.raises(RuntimeError):
+        instance.download_subscription()
     messages = instance.status_payload()["subscription"]["attempt_messages"]
     assert len(messages) == 3
-    assert messages[0].startswith("Превышен интервал")
-    assert messages[1].startswith("Не удалось определить")
-    assert messages[2] == "Подписка успешно загружена. (3)"
+    assert all(item.startswith("Превышен интервал") for item in messages)
     assert [item[-3:] for item in messages] == ["(1)", "(2)", "(3)"]
     assert messages_seen == [[], messages[:1], messages[:2]]
     lines, _ = m.common.ui_log_snapshot(100)
     assert all(any(message in line for line in lines) for message in messages)
     instance.download_subscription_once = lambda slot=None: [{}]
     instance.download_subscription()
-    assert instance.status_payload()["subscription"]["attempt_messages"] == [
-        "Подписка успешно загружена. (1)"
-    ]
+    assert instance.status_payload()["subscription"]["attempt_messages"] == []
+
+
+def test_successful_subscription_apply_clears_attempt_messages(manager_factory):
+    instance = manager_factory()
+    instance.state["subscription_attempt_messages"] = ["Ошибка соединения. (1)"]
+    instance.start_initial_candidate = lambda *args, **kwargs: None
+    instance.apply_subscription(
+        [{"outbounds": [{"tag": "node", "protocol": "vless",
+                         "settings": {"vnext": [{"address": "fi.example", "port": 443}]}}]}],
+        True, "",
+    )
+    assert instance.status_payload()["subscription"]["attempt_messages"] == []
+    assert instance.state["subscription_error"] == ""

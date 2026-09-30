@@ -651,5 +651,6 @@ def test_subscription_shows_each_attempt_in_order(page: Page, web_app_html: str)
     page.evaluate("fetchStatus(true)")
     expect(page.locator("#subscriptionAttemptLog")).to_have_text("\n".join(messages))
     harness.payload["subscription"]["attempt_messages"] = []
+    harness.payload["subscription"]["error"] = ""
     page.evaluate("fetchStatus(true)")
     expect(page.locator("#subscriptionAttemptLog")).to_be_hidden()

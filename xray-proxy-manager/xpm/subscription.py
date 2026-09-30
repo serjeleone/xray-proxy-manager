@@ -75,7 +75,6 @@ class SubscriptionMixin:
 
         try:
             configs = self.download_subscription_once()
-            report('Подписка успешно загружена.')
             self.debug_log('subscription downloaded directly without a slot proxy')
             return configs
         except Exception as direct_exc:
@@ -96,7 +95,6 @@ class SubscriptionMixin:
             for slot_tag in running_slots:
                 try:
                     configs = self.download_subscription_once(slot_tag)
-                    report('Подписка успешно загружена.')
                     xpm_common.log(f'subscription download succeeded through running Xray slot {slot_tag}')
                     return configs
                 except Exception as proxy_exc:
@@ -565,6 +563,7 @@ class SubscriptionMixin:
                 self.state['subscription_updated_at'] = success_at
                 self.state['subscription_last_success_at'] = success_at
                 self.state['subscription_error'] = ''
+                self.state['subscription_attempt_messages'] = []
                 self.state['subscription_consecutive_failures'] = 0
                 self.state['suspect_candidate_ids'] = []
             else:
