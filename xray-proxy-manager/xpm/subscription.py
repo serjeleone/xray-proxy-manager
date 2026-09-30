@@ -415,6 +415,62 @@ class SubscriptionMixin:
             return best
         return selected
 
+    def start_subscription_candidate(
+        self, selected: xpm_models.Candidate, *, initial: bool,
+    ) -> None:
+        """Validate alternatives before rejecting an otherwise usable subscription."""
+        with self.lock:
+            attempts = [selected]
+            if self.auto_switch_best_enabled:
+                remembered = self.candidate_by_id(
+                    str(self.state.get('active_candidate_id') or '')
+                )
+                remaining = sorted(
+                    self.candidates,
+                    key=lambda item: (
+                        *self.candidate_preference_sort_key(item),
+                        item.name.casefold(),
+                    ),
+                )
+                for candidate in [
+                    remembered,
+                    *self.sorted_healthy_candidates(exclude_configured_countries=True),
+                    *remaining,
+                ]:
+                    if candidate is None or self.candidate_is_excluded(candidate):
+                        continue
+                    if not any(self.same_outbound(candidate, seen) for seen in attempts):
+                        attempts.append(candidate)
+
+        for index, candidate in enumerate(attempts):
+            try:
+                self.start_initial_candidate(
+                    candidate,
+                    'initial start' if initial else 'start after subscription refresh',
+                    source='startup_subscription' if initial else 'subscription_refresh',
+                )
+                return
+            except xpm_errors.ProbeFailure as exc:
+                # start_initial_candidate has already stopped the failed process.
+                # A stale cached ping is not evidence that the whole new list is bad.
+                with self.lock:
+                    self.latencies[candidate.id] = {
+                        'status': 'error',
+                        'latency_ms': None,
+                        'checked_at': xpm_common.now_ts(),
+                        'error': xpm_errors.human_probe_error(exc),
+                        'config_revision': candidate.config_revision,
+                    }
+                xpm_common.log(
+                    f'subscription startup candidate {candidate.name} '
+                    f'[{candidate.outbound_tag}] failed validation: {exc}; '
+                    + ('trying next outbound' if index + 1 < len(attempts)
+                       else 'no startup candidates left'),
+                    error=True,
+                )
+                if index + 1 == len(attempts):
+                    raise
+
     def refresh_subscription_sync(self, *, initial: bool = False) -> None:
         attempt_at = xpm_common.now_ts()
         with self.lock:
@@ -509,11 +565,7 @@ class SubscriptionMixin:
             if initial or not active_running:
                 if selected is None:
                     raise RuntimeError('Не удалось выбрать outbound для запуска Xray.')
-                self.start_initial_candidate(
-                    selected,
-                    'initial start' if initial else 'start after subscription refresh',
-                    source='startup_subscription' if initial else 'subscription_refresh',
-                )
+                self.start_subscription_candidate(selected, initial=initial)
             else:
                 with self.lock:
                     active_slot = self.slots[self.active_slot_tag]

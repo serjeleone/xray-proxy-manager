@@ -804,7 +804,7 @@ function renderSwitchHistory() {
   // Straight segments preserve the exact counts: no spline overshoot below 0
   // or smoothing that would hide a switch in the still-open current bucket.
   const line = points.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ');
-  svg.append(make('path', { d: `${line} L${right},${bottom} L${left},${bottom} Z`, fill: 'var(--spotify)', 'fill-opacity': .8 }),
+  svg.append(make('path', { d: `${line} L${right},${bottom} L${left},${bottom} Z`, fill: 'var(--spotify)', 'fill-opacity': .7 }),
     make('path', { d: line, class: 'chart-line' }));
   points.forEach((p, i) => {
     if (!p.count) return;

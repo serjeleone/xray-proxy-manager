@@ -408,3 +408,136 @@ def test_successful_subscription_apply_clears_attempt_messages(m, manager_factor
     )
     assert instance.status_payload()["subscription"]["attempt_messages"] == []
     assert instance.state["subscription_error"] == ""
+
+
+@pytest.mark.parametrize("dual_slot", [False, True])
+def test_startup_retries_remembered_outbound_from_new_subscription(
+    m, manager_factory, isolated_paths, dual_slot,
+):
+    from conftest import DummyProcess
+    from xpm.errors import ProbeFailure
+
+    configs = [
+        {"remarks": name, "outbounds": [{
+            "tag": tag, "protocol": "vless",
+            "settings": {"vnext": [{"address": f"{tag}.example", "port": 443}]},
+        }]}
+        for tag, name in [("italy", "🇮🇹 Italy"), ("brazil", "🇧🇷 Brazil"),
+                          ("backup", "🇬🇧 Backup"), ("excluded", "🇷🇺 Excluded")]
+    ]
+    fresh = configs + [{"remarks": "New", "outbounds": [{
+        "tag": "new", "protocol": "vless",
+        "settings": {"vnext": [{"address": "new.example", "port": 443}]},
+    }]}]
+    instance = manager_factory()
+    instance.dual_slot_enabled = dual_slot
+    instance.selector_control_enabled = False
+    instance.active_slot_tag = "xray-b" if dual_slot else "xray-a"
+    instance.subscription = configs
+    instance.candidates = instance.extract_candidates(configs)
+    by_tag = {item.outbound_tag: item for item in instance.candidates}
+    instance.active_candidate_id = by_tag["brazil"].id
+    instance.state["active_candidate_id"] = by_tag["brazil"].id
+    instance.latencies = {
+        by_tag[tag].id: {"status": "ok", "latency_ms": latency}
+        for tag, latency in [("italy", 330), ("backup", 400), ("excluded", 1)]
+    }
+    isolated_paths.SUBSCRIPTION_PATH.write_text(json.dumps(configs))
+    instance.state["subscription_error"] = "previous error"
+    instance.state["subscription_attempt_messages"] = ["previous error (1)"]
+    instance.download_subscription = lambda: fresh
+    started = []
+    processes = []
+    saved = []
+
+    def start(tag, candidate):
+        slot = instance.slots[tag]
+        assert not slot.running()
+        started.append(candidate.outbound_tag)
+        slot.candidate = candidate
+        slot.candidate_id = candidate.id
+        slot.candidate_name = candidate.name
+        slot.process = DummyProcess()
+        processes.append(slot.process)
+
+    def validate(tag, **kwargs):
+        if instance.slots[tag].candidate.outbound_tag == "italy":
+            raise ProbeFailure("Превышен тайм-аут проверки")
+        return 304.0, [(instance.primary_test_url, 304.0)]
+
+    instance.start_slot = start
+    instance.validate_slot = validate
+    instance.save_active_config = lambda tag, candidate: saved.append(candidate.id)
+    instance.initialize()
+
+    assert started == ["italy", "brazil"]
+    assert processes[0].terminated
+    assert not processes[1].terminated
+    assert instance.active_candidate_id == by_tag["brazil"].id
+    assert instance.state["last_switch_source"] == "startup_subscription"
+    assert instance.latencies[by_tag["italy"].id]["status"] == "error"
+    assert instance.latencies[by_tag["brazil"].id]["latency_ms"] == 304
+    assert saved == [by_tag["brazil"].id]
+    assert instance.subscription == fresh
+    assert json.loads(isolated_paths.SUBSCRIPTION_PATH.read_text()) == fresh
+    assert instance.state["subscription_error"] == ""
+    assert instance.state["subscription_attempt_messages"] == []
+    assert instance.state["subscription_last_success_at"] is not None
+
+
+@pytest.mark.parametrize("auto_switch", [False, True])
+def test_startup_exhaustion_preserves_previous_subscription(
+    m, manager_factory, candidate_factory, isolated_paths, auto_switch,
+):
+    from xpm.errors import ProbeFailure
+
+    old = candidate_factory("old")
+    first = candidate_factory("first")
+    remembered = candidate_factory("remembered")
+    excluded = candidate_factory("excluded", country="RU")
+    remaining = candidate_factory("remaining")
+    instance = manager_factory([old])
+    instance.auto_switch_best_enabled = auto_switch
+    instance.subscription = [{"old": True}]
+    instance.active_candidate_id = remembered.id
+    instance.state["active_candidate_id"] = remembered.id
+    instance.extract_candidates = lambda configs: [first, remembered, excluded, remaining]
+    instance.choose_initial_candidate = lambda preferred=None: first
+    instance.latencies = {old.id: {"status": "ok", "latency_ms": 50}}
+    isolated_paths.SUBSCRIPTION_PATH.write_text(json.dumps(instance.subscription))
+    attempted = []
+
+    def start(candidate, *args, **kwargs):
+        attempted.append(candidate.id)
+        raise ProbeFailure("timeout")
+
+    instance.start_initial_candidate = start
+    with pytest.raises(ProbeFailure):
+        instance.apply_subscription([{"new": True}], True, "", initial=True)
+
+    assert attempted == (
+        ["first", "remembered", "remaining"] if auto_switch else ["first"]
+    )
+    assert instance.subscription == [{"old": True}]
+    assert instance.candidates == [old]
+    assert json.loads(isolated_paths.SUBSCRIPTION_PATH.read_text()) == [{"old": True}]
+    assert instance.latencies == {old.id: {"status": "ok", "latency_ms": 50}}
+    assert "предыдущая рабочая" in instance.state["subscription_error"]
+
+
+def test_startup_does_not_retry_unexpected_runtime_errors(
+    manager_factory, candidate_factory,
+):
+    first = candidate_factory("first")
+    second = candidate_factory("second")
+    instance = manager_factory([first, second])
+    attempted = []
+
+    def start(candidate, *args, **kwargs):
+        attempted.append(candidate.id)
+        raise OSError("cannot write config")
+
+    instance.start_initial_candidate = start
+    with pytest.raises(OSError, match="cannot write"):
+        instance.start_subscription_candidate(first, initial=True)
+    assert attempted == ["first"]

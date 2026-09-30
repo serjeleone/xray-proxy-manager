@@ -628,7 +628,7 @@ def test_switch_chart_uses_solid_fill_with_line_color(page, web_app_html):
     page.locator('#switchHistoryToggle').click()
     area = page.locator('#switchHistoryChart path').first
     line = page.locator('#switchHistoryChart .chart-line')
-    expect(area).to_have_attribute('fill-opacity', '0.8')
+    expect(area).to_have_attribute('fill-opacity', '0.7')
     assert area.evaluate('(el) => getComputedStyle(el).fill') == line.evaluate('(el) => getComputedStyle(el).stroke')
     expect(page.locator('#switchHistoryChart linearGradient')).to_have_count(0)
 
