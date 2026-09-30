@@ -19,7 +19,7 @@ class SubscriptionMixin:
             temp_path = Path(temp_file.name)
         try:
             command = [
-                xpm_common.CURL_BIN, '-fsSL', '--connect-timeout', '15', '--max-time', str(timeout),
+                xpm_common.CURL_BIN, '-fsSL', '--connect-timeout', '15', '--max-time', '15',
                 '-A', self.user_agent,
             ]
             environment = os.environ.copy()
