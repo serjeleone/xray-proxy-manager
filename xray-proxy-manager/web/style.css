@@ -987,7 +987,6 @@ body.modal-open { overflow: hidden; }
 .switch-history-chart .chart-axis { stroke: rgba(255,255,255,.18); }
 .switch-history-chart text { fill: var(--muted); font-family: inherit; font-size: 10px; }
 .switch-history-chart .chart-line { fill: none; stroke: var(--spotify); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
-.switch-history-chart .chart-point { fill: var(--spotify); }
 .switch-history-tooltip {
   position: absolute; z-index: 1; left: 50%; top: 24px; transform: translateX(-50%);
   max-width: calc(100% - 8px); padding: 4px 8px; border: 1px solid var(--line-strong);

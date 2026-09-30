@@ -599,8 +599,7 @@ def test_switch_chart_replaces_only_status_region_without_layout_shift(page, web
     assert page.locator('.switch-history-title').evaluate('(el) => el.scrollWidth <= el.clientWidth')
     assert page.locator('#switchHistory').evaluate('(el) => getComputedStyle(el).backgroundColor') == 'rgba(0, 0, 0, 0)'
     expect(page.locator('#switchHistoryChart')).to_have_attribute('aria-label', 'Переключений за последние 12 часов: 1. Интервал — 5 минут.')
-    # The current partial bucket is an actual point at the right edge.
-    assert page.locator('.chart-point').count() == 1
+    expect(page.locator('#switchHistoryChart circle')).to_have_count(0)
     toggle.press('Enter')
     expect(page.locator('#switchHistory')).to_have_css('visibility', 'hidden')
     assert page.locator('.hero-actions').bounding_box() == before
@@ -613,10 +612,12 @@ def test_open_switch_chart_updates_and_handles_reduced_motion(page, web_app_html
     harness = open_app(page, web_app_html, payload)
     page.locator('#switchHistoryToggle').click()
     expect(page.locator('#heroInfoText')).to_have_css('visibility', 'hidden')
-    assert page.locator('.chart-point').count() == 0
+    initial_path = page.locator('.chart-line').get_attribute('d')
+    expect(page.locator('#switchHistoryChart circle')).to_have_count(0)
     harness.payload['switch_history'] = history_payload(3)
     expect(page.locator('#switchHistoryChart')).to_have_attribute('aria-label', 'Переключений за последние 12 часов: 3. Интервал — 5 минут.', timeout=5000)
-    assert page.locator('.chart-point').count() == 1
+    assert page.locator('.chart-line').get_attribute('d') != initial_path
+    expect(page.locator('#switchHistoryChart circle')).to_have_count(0)
     page.keyboard.press('Escape')
     expect(page.locator('#switchHistory')).to_have_css('visibility', 'hidden')
 

@@ -806,12 +806,6 @@ function renderSwitchHistory() {
   const line = points.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ');
   svg.append(make('path', { d: `${line} L${right},${bottom} L${left},${bottom} Z`, fill: 'var(--spotify)', 'fill-opacity': .7 }),
     make('path', { d: line, class: 'chart-line' }));
-  points.forEach((p, i) => {
-    if (!p.count) return;
-    const dot = make('circle', { cx: p.x, cy: p.y, r: 2.1, class: 'chart-point' });
-    dot.append(make('title', {}, switchBucketLabel(buckets[i])));
-    svg.append(dot);
-  });
   switchChart.geometry = { left, right, history };
 }
 
