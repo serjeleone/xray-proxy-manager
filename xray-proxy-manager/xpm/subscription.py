@@ -443,6 +443,8 @@ class SubscriptionMixin:
                         attempts.append(candidate)
 
         for index, candidate in enumerate(attempts):
+            if initial:
+                self.startup_step(f'Проверка outbound «{candidate.name}» ({index + 1}/{len(attempts)})')
             with self.lock:
                 slot = self.slots[self.active_slot_tag if self.dual_slot_enabled else 'xray-a']
                 previous_slot_candidate = (slot.candidate, slot.candidate_id, slot.candidate_name)

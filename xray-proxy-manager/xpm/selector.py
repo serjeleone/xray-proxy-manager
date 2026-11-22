@@ -440,7 +440,13 @@ class SelectorMixin:
             })
         if not was_available:
             xpm_common.log(f'Selector API connection restored; reported active slot is {current}')
-        self.reconcile_startup_selector(current)
+        try:
+            self.reconcile_startup_selector(current)
+        except Exception as exc:
+            with self.lock:
+                self.selector_state.update(available=False, error=str(exc), connections_supported=False)
+            xpm_common.log(f'could not reconcile startup selector: {exc}', error=True)
+            return
         switch_in_progress = self.switch_lock.locked()
         if not self.selector_reconciliation_pending and not switch_in_progress:
             self.restore_selector_alignment(current, force_confirmation=not was_available)
@@ -478,6 +484,8 @@ class SelectorMixin:
         return 1 if urgent else self.selector_status_interval_seconds
 
     def selector_status_loop(self) -> None:
+        if self.selector_state.get('last_checked_at') is not None and self.stop_event.wait(self.selector_status_wait_seconds()):
+            return
         while not self.stop_event.is_set():
             self.refresh_selector_status()
             if self.stop_event.wait(self.selector_status_wait_seconds()):

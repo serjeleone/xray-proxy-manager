@@ -999,3 +999,32 @@ body.modal-open { overflow: hidden; }
 }
 
 #subscriptionAttemptLog { white-space: pre-line; }
+
+.hero-card.starting .hero-primary-row,
+.hero-card.starting #heroInfoStage,
+.hero-card:not(.starting) .startup-panel { display: none; }
+.hero-card.starting { grid-template-rows: minmax(0, 1fr); }
+.startup-panel {
+  flex: 1;
+  padding: 12px 14px;
+  border: 1px solid rgba(245, 166, 35, .4);
+  background: rgba(245, 166, 35, .07);
+  border-radius: 13px;
+  color: #ffcf84;
+}
+.startup-panel ol {
+  margin: 7px 0 0;
+  padding-left: 1.5em;
+  max-height: 11em;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  font-size: .82rem;
+  line-height: 1.5;
+}
+@media (prefers-reduced-motion: no-preference) {
+  #activeName.switching { animation: outbound-pulse 1.2s linear infinite; }
+}
+@keyframes outbound-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}

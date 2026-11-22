@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import socketserver
+import sys
 import threading
 import time
 import traceback
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
 
 class ServerLoggingMixin:
     def handle_error(self, request: Any, client_address: Any) -> None:
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
         xpm_common.log(f'request failed for {client_address}:\n{traceback.format_exc()}', error=True)
 
 
@@ -169,13 +172,8 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip('/') or '/'
         if path.endswith('/api/health'):
-            status = self.manager.status_payload()
-            xray_running = bool(status.get('xray_running'))
-            healthy = xray_running or getattr(self.manager, 'waiting_for_first_outbound', False)
-            self.send_json({
-                'ok': healthy,
-                'xray_running': xray_running,
-            }, 200 if healthy else 503)
+            health = self.manager.health_payload()
+            self.send_json(health, 200 if health['ok'] else 503)
             return
         if self.reject_non_ingress_client():
             return

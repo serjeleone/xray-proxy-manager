@@ -6,12 +6,22 @@ from . import common as xpm_common, errors as xpm_errors
 
 
 class StatusMixin:
+    def health_payload(self) -> dict[str, bool]:
+        # Supervisor must be able to probe even while a status snapshot or a
+        # subscription update holds the manager lock. Slot objects are stable.
+        process = self.slots[self.active_slot_tag].process
+        running = process is not None and process.poll() is None
+        switching = self.state['jobs']['switch'].get('running', False)
+        healthy = running or self.waiting_for_first_outbound or switching
+        return {'ok': healthy, 'xray_running': running}
+
     def status_payload(self) -> dict[str, Any]:
         with self.lock:
             if not self.state['jobs']['refresh'].get('startup') and self.rebind_slot_candidates():
                 self.save_state()
             active_slot = self.slots[self.active_slot_tag]
-            process_running = active_slot.running()
+            running_slots = {tag: slot for tag, slot in self.slots.items() if slot.running()}
+            process_running = self.active_slot_tag in running_slots
             active, selected, mismatch = self.effective_active_candidate()
             runtime_active_candidate = active_slot.candidate or selected or active
             effective_id = runtime_active_candidate.id if runtime_active_candidate else ''
@@ -19,9 +29,8 @@ class StatusMixin:
             candidates = []
             for item in self.candidates:
                 assigned_slots = [
-                    tag for tag, slot in self.slots.items()
-                    if slot.running()
-                    and self.same_candidate_identity(item, slot.candidate)
+                    tag for tag, slot in running_slots.items()
+                    if self.same_candidate_identity(item, slot.candidate)
                     and self.same_outbound(item, slot.candidate)
                 ]
                 slot_display_ids.update({tag: item.id for tag in assigned_slots})
@@ -48,8 +57,8 @@ class StatusMixin:
             # A running slot may still use an outbound removed or changed by a
             # subscription refresh. Keep that exact runtime snapshot visible;
             # a stable ID alone does not prove the new configuration is running.
-            for tag, slot in self.slots.items():
-                if not slot.running() or tag in slot_display_ids:
+            for tag, slot in running_slots.items():
+                if tag in slot_display_ids:
                     continue
                 stale = slot.candidate
                 stale_id = slot.candidate_id or (stale.id if stale else '')
@@ -98,7 +107,7 @@ class StatusMixin:
             for tag, slot in self.slots.items():
                 slots_payload[tag] = {
                     'tag': tag,
-                    'running': slot.running(),
+                    'running': tag in running_slots,
                     'active': tag == self.active_slot_tag,
                     'draining': slot.draining,
                     'candidate_id': slot.candidate_id,

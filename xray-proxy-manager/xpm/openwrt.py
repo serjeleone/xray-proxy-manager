@@ -329,6 +329,8 @@ class OpenwrtMixin:
             self.router_lock.release()
 
     def router_status_loop(self) -> None:
+        if self.router_state.get('last_checked_at') is not None and self.stop_event.wait(self.router_status_interval_seconds):
+            return
         while not self.stop_event.is_set():
             self.refresh_router_status()
             if self.stop_event.wait(self.router_status_interval_seconds):

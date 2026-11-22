@@ -94,6 +94,7 @@ def manager_factory(m, candidate_factory, tmp_path):
         instance.subscription_apply_lock = threading.Lock()
         instance.router_lock = threading.Lock()
         instance.options_sync_lock = threading.Lock()
+        instance.waiting_for_first_outbound = True
         instance.stop_event = threading.Event()
         instance.settings_event = threading.Event()
         instance.preference_scan_generation = 0

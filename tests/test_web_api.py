@@ -32,6 +32,11 @@ class FakeManager:
 @pytest.fixture
 def web_server(m, isolated_paths, monkeypatch):
     manager = FakeManager()
+    manager.active_slot_tag = 'xray-a'
+    manager.slots = {'xray-a': SimpleNamespace(process=SimpleNamespace(poll=lambda: None))}
+    manager.state = {'jobs': {'switch': {}}}
+    manager.waiting_for_first_outbound = False
+    manager.health_payload = lambda: m.XrayManager.health_payload(manager)
     handler = lambda *args, **kwargs: m.web.WebHandler(manager, *args, **kwargs)
     server = m.web.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -79,7 +84,8 @@ def test_health_status_logs_and_static_routes(m, web_server):
 
 def test_health_returns_503_when_xray_is_down(m, web_server):
     manager, base = web_server
-    manager.status_payload = lambda: {"xray_running": False}
+    manager.slots['xray-a'].process = None
+    manager.status_payload = lambda: pytest.fail('Watchdog requested the full UI status')
     with pytest.raises(urllib.error.HTTPError) as error:
         urllib.request.urlopen(f"{base}/api/health")
     assert error.value.code == 503

@@ -27,7 +27,7 @@ const state = {
   throughputFetchInFlight: false,
   switchInFlight: false,
   modeInFlight: false,
-  statusRequest: 0,
+  statusController: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -581,8 +581,26 @@ function initializeSettings(payload) {
   state.settingsInitialized = true;
 }
 
+function renderStartup(job) {
+  const starting = Boolean(job?.startup);
+  $('heroCard').classList.toggle('starting', starting);
+  if (!starting) return;
+  const list = $('startupSteps');
+  const steps = job.steps?.length ? job.steps : [job.message || 'Ожидание данных о запуске'];
+  if (list.childElementCount === steps.length && list.lastElementChild?.textContent === steps.at(-1)) return;
+  const atEnd = list.scrollHeight - list.clientHeight - list.scrollTop < 2;
+  list.replaceChildren(...steps.map((message) => {
+    const item = document.createElement('li');
+    item.textContent = message;
+    return item;
+  }));
+  if (atEnd) list.scrollTop = list.scrollHeight;
+}
+
 function render(payload) {
   state.payload = payload;
+  renderStartup(payload.jobs?.refresh);
+  $('activeName').classList.toggle('switching', state.switchInFlight || Boolean(payload.jobs?.switch?.running));
   initializeSettings(payload);
   renderProtocols(payload.protocols || []);
   renderPreferredCountries(payload);
@@ -592,7 +610,7 @@ function render(payload) {
 
   renderTraffic(payload);
   renderRuntimeStatus(payload);
-  const active = payload.active;
+  const active = payload.xray_running ? payload.active : null;
   if (!state.switchInFlight) $('activeName').textContent = active?.name || 'Активный outbound не определён';
   const blueGreen = payload.blue_green || {};
   const modeLabel = blueGreen.mode === 'single' ? 'Однослотовый режим' : 'Двухслотовый режим';
@@ -1094,23 +1112,31 @@ function statusRefreshPaused() {
 }
 
 async function fetchStatus(force = false) {
-  if (!force && state.switchInFlight) return;
+  if (!force && state.statusController) return;
   if (!force && statusRefreshPaused()) {
     state.statusRefreshDeferred = true;
     return;
   }
-  const request = ++state.statusRequest;
+  state.statusController?.abort();
+  const controller = new AbortController();
+  state.statusController = controller;
+  const timer = window.setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(api('api/status'), { cache: 'no-store' });
+    const response = await fetch(api('api/status'), { cache: 'no-store', signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    if (request !== state.statusRequest) return;
+    if (controller !== state.statusController) return;
     render(payload);
     state.statusRefreshDeferred = false;
   } catch (error) {
+    if (controller !== state.statusController) return;
+    if (!state.payload) $('startupSteps').firstElementChild.textContent = 'Ожидание ответа приложения…';
     $('statusDot').className = 'status-dot bad';
     $('xrayState').textContent = 'Интерфейс недоступен';
     toast(`Ошибка: ${error.message}`, true);
+  } finally {
+    window.clearTimeout(timer);
+    if (state.statusController === controller) state.statusController = null;
   }
 }
 
@@ -1234,19 +1260,14 @@ async function selectCandidate(id) {
   if (state.switchInFlight || state.modeInFlight || state.payload?.jobs?.switch?.running) return;
   state.switchInFlight = true;
   if (state.payload) renderCandidates(state.payload);
-  const name = $('activeName');
-  const duration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180;
-  const fadeOut = name.animate([{ opacity: 1 }, { opacity: 0 }], { duration, fill: 'forwards' });
+  $('activeName').classList.add('switching');
   try {
     toast('Переключение outbound…');
     await post('api/select', { id });
     toast('Outbound переключён');
   } catch (error) { toast(`Ошибка: ${error.message}`, true); }
   finally {
-    await Promise.all([fadeOut.finished, fetchStatus(true)]);
-    name.textContent = state.payload?.active?.name || 'Активный outbound не определён';
-    fadeOut.cancel();
-    await name.animate([{ opacity: 0 }, { opacity: 1 }], { duration }).finished;
+    await fetchStatus(true);
     state.switchInFlight = false;
     if (state.payload) render(state.payload);
   }
@@ -1524,7 +1545,10 @@ $('saveOnlyButton').addEventListener('click', hideRestartModal);
 $('cancelRestartButton').addEventListener('click', hideRestartModal);
 window.addEventListener('resize', () => window.requestAnimationFrame(positionLogFileControls));
 
-fetchStatus();
+async function pollStatus() {
+  await fetchStatus();
+  window.setTimeout(pollStatus, $('heroCard').classList.contains('starting') ? 1000 : 3000);
+}
+pollStatus();
 fetchThroughput();
-setInterval(fetchStatus, 3000);
 setInterval(fetchThroughput, 1000);

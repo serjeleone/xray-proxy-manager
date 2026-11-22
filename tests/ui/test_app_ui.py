@@ -342,9 +342,39 @@ def test_speed_badge_uses_visible_order_and_ignores_repeated_clicks(page: Page, 
     expect(badge).to_have_attribute('data-next-id', 'vmess-id')
     page.locator('#sortSelect').select_option('ping-desc')
     expect(badge).to_have_attribute('data-next-id', 'vless-id')
+    pending = []
+    page.route('**/api/select', lambda route: pending.append(route))
     badge.evaluate('(button) => { button.click(); button.click(); }')
+    expect(badge).to_be_disabled()
+    name = page.locator('#activeName')
+    expect(name).to_have_class('switching')
+    assert name.evaluate("""node => {
+      const animation = node.getAnimations()[0];
+      if (animation.effect.getTiming().iterations !== Infinity) return [];
+      animation.pause();
+      return [0, 600, 1200, 1800, 2400].map(t => {
+        animation.currentTime = t;
+        return Number(getComputedStyle(node).opacity);
+      });
+    }""") == [1, 0, 1, 0, 1]
+    assert len(pending) == 1
+    harness.handler(pending[0])
     expect(badge).to_be_enabled()
     assert [r['body'] for r in harness.requests if r['path'] == '/api/select'] == [{'id': 'vless-id'}]
+
+
+def test_startup_panel_replaces_provisional_hero_until_ready(page: Page, web_app_html: str):
+    payload = base_payload()
+    steps = ['Загрузка подписки', 'Проверка внешнего правила OpenWrt']
+    payload['jobs']['refresh'].update(startup=True, running=True, steps=steps)
+    harness = open_app(page, web_app_html, payload)
+    expect(page.locator('#startupSteps li')).to_have_text(steps)
+    expect(page.locator('#heroInfoStage')).to_be_hidden()
+    expect(page.locator('#activeName')).to_be_hidden()
+    harness.payload['jobs']['refresh'].update(startup=False, running=False)
+    expect(page.locator('#startupPanel')).to_be_hidden()
+    expect(page.locator('#heroInfoStage')).to_be_visible()
+    expect(page.locator('#activeName')).to_have_text('Active Finland')
 
 
 def test_traffic_control_and_repeated_mode_changes_follow_server_state(page: Page, web_app_html: str) -> None:
