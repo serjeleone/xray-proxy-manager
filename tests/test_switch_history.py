@@ -19,14 +19,14 @@ def test_exact_window_partial_buckets_restart_and_log_rotation(m, tmp_path, monk
         m.common.append_ui_log(f'line {i}')
     payload = m.switch_history.SwitchHistory(path).payload()
     assert payload['total'] == 4
-    assert len(payload['buckets']) == 145
-    assert payload['buckets'][0] == {'start': now - 43200, 'end': now // 300 * 300 - 42900, 'count': 1}
-    assert payload['buckets'][-1] == {'start': now // 300 * 300, 'end': now, 'count': 3}
+    assert len(payload['buckets']) == 25
+    assert payload['buckets'][0] == {'start': now - 43200, 'end': now // 1800 * 1800 - 41400, 'count': 1}
+    assert payload['buckets'][-1] == {'start': now // 1800 * 1800, 'end': now, 'count': 3}
     assert sum(bucket['count'] for bucket in payload['buckets']) == 4
     assert history.payload(now + 43201)['total'] == 0
 
 
-def test_new_switch_visible_at_exact_five_minute_boundary(m, tmp_path):
+def test_new_switch_visible_at_exact_half_hour_boundary(m, tmp_path):
     history = m.switch_history.SwitchHistory(tmp_path / 'history.json')
     now = 1_800_000_000
     history.record(now - 1)

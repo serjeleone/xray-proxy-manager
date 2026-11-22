@@ -699,6 +699,7 @@ body.modal-open { overflow: hidden; }
   line-height: 1;
   white-space: nowrap;
 }
+.throughput-badge:enabled { cursor: pointer; }
 .throughput-badge > span {
   display: inline-block;
   transform: translate(1px, 1px);

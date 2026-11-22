@@ -8,14 +8,14 @@ from . import common, persistence
 
 
 WINDOW_SECONDS = 12 * 60 * 60
-BUCKET_SECONDS = 5 * 60
+BUCKET_SECONDS = 30 * 60
 
 
 class SwitchHistory:
     """Persist completed outbound changes independently of the rotating UI log.
 
     Equal-second events share a counter. Keeping second precision makes the
-    oldest partial five-minute bucket exact, without an unbounded event list.
+    oldest partial half-hour bucket exact, without an unbounded event list.
     The file is read once; chart requests use the in-memory counters.
     """
 

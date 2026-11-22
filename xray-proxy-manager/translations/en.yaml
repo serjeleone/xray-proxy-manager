@@ -50,6 +50,9 @@ configuration:
   auto_switch_preferred_protocol:
     name: Preferred protocol
     description: Protocol prioritized when selecting the best outbound; available values are derived from the current subscription.
+  excluded_check_strategy:
+    name: Excluded outbound checks
+    description: Full-scan policy for auto_switch_excluded matches. Use standard for normal order, low to check after all other outbounds, or skip to omit them.
   auto_switch_excluded:
     name: Exclude from selection
     description: Comma-separated ISO country codes and text fragments; always excluded from automatic selection. To manually select a hidden outbound, clear the “Hide excluded” checkbox in the UI.

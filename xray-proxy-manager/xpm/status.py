@@ -8,7 +8,7 @@ from . import common as xpm_common, errors as xpm_errors
 class StatusMixin:
     def status_payload(self) -> dict[str, Any]:
         with self.lock:
-            if self.rebind_slot_candidates():
+            if not self.state['jobs']['refresh'].get('startup') and self.rebind_slot_candidates():
                 self.save_state()
             active_slot = self.slots[self.active_slot_tag]
             process_running = active_slot.running()
@@ -176,6 +176,7 @@ class StatusMixin:
                     'preferred_country': getattr(self, 'auto_switch_preferred_country', ''),
                     'preferred_protocol': getattr(self, 'auto_switch_preferred_protocol', ''),
                     'excluded': self.auto_switch_excluded,
+                    'excluded_check_strategy': self.excluded_check_strategy,
                     'min_ping_delta_ms': self.auto_switch_min_ping_delta_ms,
                     'interval_seconds': self.auto_check_interval_seconds,
                     'failure_threshold': self.auto_check_failures,

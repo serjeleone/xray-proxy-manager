@@ -333,6 +333,20 @@ def test_outbound_and_runtime_buttons_send_expected_commands(page: Page, web_app
     ]
 
 
+def test_speed_badge_uses_visible_order_and_ignores_repeated_clicks(page: Page, web_app_html: str):
+    harness = open_app(page, web_app_html)
+    badge = page.locator('#throughputBadge')
+    expect(badge).to_have_attribute('data-next-id', 'drain-id')
+    harness.payload['blue_green']['slots']['xray-a'].update(running=False, draining=False)
+    page.evaluate('fetchStatus(true)')
+    expect(badge).to_have_attribute('data-next-id', 'vmess-id')
+    page.locator('#sortSelect').select_option('ping-desc')
+    expect(badge).to_have_attribute('data-next-id', 'vless-id')
+    badge.evaluate('(button) => { button.click(); button.click(); }')
+    expect(badge).to_be_enabled()
+    assert [r['body'] for r in harness.requests if r['path'] == '/api/select'] == [{'id': 'vless-id'}]
+
+
 def test_traffic_control_and_repeated_mode_changes_follow_server_state(page: Page, web_app_html: str) -> None:
     harness = open_app(page, web_app_html)
     page.locator('#trafficButton').click()
@@ -573,11 +587,11 @@ def history_payload(count=1):
     end = 1_800_000_123
     start = end - 43200
     buckets = [
-        {'start': max(start, ts), 'end': min(end, ts + 300), 'count': 0}
-        for ts in range(start // 300 * 300, end // 300 * 300 + 1, 300)
+        {'start': max(start, ts), 'end': min(end, ts + 1800), 'count': 0}
+        for ts in range(start // 1800 * 1800, end // 1800 * 1800 + 1, 1800)
     ]
     buckets[-1]['count'] = count
-    return {'start': start, 'end': end, 'bucket_seconds': 300, 'total': count, 'buckets': buckets}
+    return {'start': start, 'end': end, 'bucket_seconds': 1800, 'total': count, 'buckets': buckets}
 
 
 @pytest.mark.parametrize('width', [320, 430, 1440])
@@ -598,7 +612,7 @@ def test_switch_chart_replaces_only_status_region_without_layout_shift(page, web
     assert title['height'] == original['height']
     assert page.locator('.switch-history-title').evaluate('(el) => el.scrollWidth <= el.clientWidth')
     assert page.locator('#switchHistory').evaluate('(el) => getComputedStyle(el).backgroundColor') == 'rgba(0, 0, 0, 0)'
-    expect(page.locator('#switchHistoryChart')).to_have_attribute('aria-label', 'Переключений за последние 12 часов: 1. Интервал — 5 минут.')
+    expect(page.locator('#switchHistoryChart')).to_have_attribute('aria-label', 'Переключений за последние 12 часов: 1. Интервал — 30 минут.')
     expect(page.locator('#switchHistoryChart circle')).to_have_count(0)
     toggle.press('Enter')
     expect(page.locator('#switchHistory')).to_have_css('visibility', 'hidden')
@@ -615,7 +629,7 @@ def test_open_switch_chart_updates_and_handles_reduced_motion(page, web_app_html
     initial_path = page.locator('.chart-line').get_attribute('d')
     expect(page.locator('#switchHistoryChart circle')).to_have_count(0)
     harness.payload['switch_history'] = history_payload(3)
-    expect(page.locator('#switchHistoryChart')).to_have_attribute('aria-label', 'Переключений за последние 12 часов: 3. Интервал — 5 минут.', timeout=5000)
+    expect(page.locator('#switchHistoryChart')).to_have_attribute('aria-label', 'Переключений за последние 12 часов: 3. Интервал — 30 минут.', timeout=5000)
     assert page.locator('.chart-line').get_attribute('d') != initial_path
     expect(page.locator('#switchHistoryChart circle')).to_have_count(0)
     page.keyboard.press('Escape')
@@ -629,7 +643,7 @@ def test_switch_chart_uses_solid_fill_with_line_color(page, web_app_html):
     page.locator('#switchHistoryToggle').click()
     area = page.locator('#switchHistoryChart path').first
     line = page.locator('#switchHistoryChart .chart-line')
-    expect(area).to_have_attribute('fill-opacity', '0.7')
+    expect(area).to_have_attribute('fill-opacity', '0.6')
     assert area.evaluate('(el) => getComputedStyle(el).fill') == line.evaluate('(el) => getComputedStyle(el).stroke')
     expect(page.locator('#switchHistoryChart linearGradient')).to_have_count(0)
 

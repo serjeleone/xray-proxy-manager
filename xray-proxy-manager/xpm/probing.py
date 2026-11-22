@@ -8,8 +8,15 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 from . import common as xpm_common, errors as xpm_errors, models as xpm_models, persistence as xpm_persistence
+
+
+class ScanTarget(NamedTuple):
+    id: str
+    name: str
+    target: xpm_models.Candidate | str
+    process: subprocess.Popen | None = None
 
 
 class ProbingMixin:
@@ -334,44 +341,49 @@ class ProbingMixin:
             'error': error_text[-500:],
         }
 
+    def latency_target_groups(self, candidate_ids: list[str] | None) -> list[list[ScanTarget]]:
+        requested = None if candidate_ids is None else set(candidate_ids)
+        candidates = [item for item in self.candidates if requested is None or item.id in requested]
+        targets = [(ScanTarget(item.id, item.name, item), item) for item in candidates]
+        for tag, slot in self.slots.items():
+            target_id = self.slot_candidate_id(tag)
+            if not slot.running() or (requested is not None and target_id not in requested):
+                continue
+            if any(self.same_outbound(item, slot.candidate) for item in candidates):
+                continue
+            name = slot.candidate_name or (slot.candidate.name if slot.candidate else tag)
+            targets.append((ScanTarget(target_id, name, tag, slot.process), slot.candidate))
+
+        normal, deferred = [], []
+        for target, candidate in targets:
+            if (requested is None and self.excluded_check_strategy != 'standard'
+                    and candidate is not None and self.candidate_is_excluded(candidate)):
+                if self.excluded_check_strategy == 'low':
+                    deferred.append(target)
+            else:
+                normal.append(target)
+        return [normal, deferred]
+
     def latency_job(
         self,
         candidate_ids: list[str] | None = None,
         switch_to_best: bool = False,
         source: str = 'manual',
         manual_generation: int | None = None,
+        target_groups: list[list[ScanTarget]] | None = None,
     ) -> None:
         with self.lock:
             if manual_generation is None:
                 manual_generation = getattr(self, 'manual_generation', 0)
             probe_versions = dict(getattr(self, 'latency_versions', {}))
-            candidates = [
-                item for item in self.candidates
-                if candidate_ids is None or item.id in candidate_ids
-            ]
-            runtime_slot_targets: list[tuple[str, str, str, Any]] = []
-            requested_ids = set(candidate_ids or [])
-            for slot_tag, slot in getattr(self, 'slots', {}).items():
-                if not slot.running():
-                    continue
-                represented = any(
-                    self.same_outbound(candidate, slot.candidate)
-                    for candidate in candidates
-                )
-                target_id = self.slot_candidate_id(slot_tag)
-                requested = candidate_ids is None or target_id in requested_ids
-                if represented or not requested:
-                    continue
-                target_name = slot.candidate_name or (
-                    slot.candidate.name if slot.candidate is not None else slot_tag
-                )
-                runtime_slot_targets.append((slot_tag, target_id, target_name, slot.process))
+            if target_groups is None:
+                target_groups = self.latency_target_groups(candidate_ids)
+            targets = [target for group in target_groups for target in group]
+            candidates = [item.target for item in targets if isinstance(item.target, xpm_models.Candidate)]
             job = self.state['jobs']['latency']
-            total_targets = len(candidates) + len(runtime_slot_targets)
-            workers = self.effective_latency_test_parallelism(total_targets)
-            checking_target_ids = {
-                candidate.id for candidate in candidates
-            } | {target_id for _tag, target_id, _name, _process in runtime_slot_targets}
+            total_targets = len(targets)
+            workers = self.effective_latency_test_parallelism(max(map(len, target_groups)))
+            checking_target_ids = {item.id for item in targets}
             if not hasattr(self, 'latency_checking_ids'):
                 self.latency_checking_ids = set()
             self.latency_checking_ids.update(checking_target_ids)
@@ -387,63 +399,61 @@ class ProbingMixin:
         final_message = 'Проверка завершена'
         try:
             completed = 0
-            futures: dict[Future[dict[str, Any]], tuple[str, str, Any, Any]] = {}
             with ThreadPoolExecutor(
                 max_workers=workers,
                 thread_name_prefix='xray-latency',
             ) as executor:
-                for candidate in candidates:
+                for group in target_groups:
                     if self.stop_event.is_set():
                         break
-                    future = executor.submit(self.test_candidate_for_full_scan, candidate)
-                    futures[future] = (candidate.id, candidate.name, candidate, None)
-                for slot_tag, target_id, target_name, process in runtime_slot_targets:
-                    if self.stop_event.is_set():
-                        break
-                    future = executor.submit(self.test_running_slot_for_full_scan, slot_tag)
-                    futures[future] = (target_id, target_name, slot_tag, process)
-
-                for future in as_completed(futures):
-                    target_id, target_name, target, process = futures[future]
-                    if self.stop_event.is_set():
-                        for pending in futures:
-                            pending.cancel()
-                        break
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        result = {
-                            'status': 'error', 'latency_ms': None,
-                            'checked_at': xpm_common.now_ts(),
-                            'error': xpm_errors.human_probe_error(exc),
-                        }
-                    completed += 1
-                    with self.lock:
-                        if isinstance(target, xpm_models.Candidate):
-                            current = self.candidate_by_id(target_id)
-                            unchanged = current is not None and self.same_outbound(current, target)
-                            result['config_revision'] = target.config_revision
-                        else:
-                            slot = self.slots[target]
-                            unchanged = slot.process is process and self.slot_candidate_id(target) == target_id
-                        unchanged = unchanged and (
-                            getattr(self, 'latency_versions', {}).get(target_id, 0)
-                            == probe_versions.get(target_id, 0)
-                        )
-                        if unchanged:
-                            fresh_results[target_id] = result
-                            self.latencies[target_id] = result
-                        self.latency_checking_ids.discard(target_id)
-                        self.save_latencies()
-                        job = self.state['jobs']['latency']
-                        job.update({
-                            'progress': completed,
-                            'message': f'{target_name}: ' + (
-                                f'{result["latency_ms"]} мс'
-                                if result['status'] == 'ok' else 'недоступен'
-                            ),
-                        })
-                        self.save_state()
+                    futures: dict[Future, ScanTarget] = {}
+                    for item in group:
+                        if self.stop_event.is_set():
+                            break
+                        probe = (self.test_running_slot_for_full_scan if isinstance(item.target, str)
+                                 else self.test_candidate_for_full_scan)
+                        futures[executor.submit(probe, item.target)] = item
+                    for future in as_completed(futures):
+                        target_id, target_name, target, process = futures[future]
+                        if self.stop_event.is_set():
+                            for pending in futures:
+                                pending.cancel()
+                            break
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            result = {
+                                'status': 'error', 'latency_ms': None,
+                                'checked_at': xpm_common.now_ts(),
+                                'error': xpm_errors.human_probe_error(exc),
+                            }
+                        completed += 1
+                        with self.lock:
+                            if isinstance(target, xpm_models.Candidate):
+                                current = self.candidate_by_id(target_id)
+                                unchanged = current is not None and self.same_outbound(current, target)
+                                result['config_revision'] = target.config_revision
+                            else:
+                                slot = self.slots[target]
+                                unchanged = slot.process is process and self.slot_candidate_id(target) == target_id
+                            unchanged = unchanged and (
+                                getattr(self, 'latency_versions', {}).get(target_id, 0)
+                                == probe_versions.get(target_id, 0)
+                            )
+                            if unchanged:
+                                fresh_results[target_id] = result
+                                self.latencies[target_id] = result
+                            self.latency_checking_ids.discard(target_id)
+                            self.save_latencies()
+                            job = self.state['jobs']['latency']
+                            job.update({
+                                'progress': completed,
+                                'message': f'{target_name}: ' + (
+                                    f'{result["latency_ms"]} мс'
+                                    if result['status'] == 'ok' else 'недоступен'
+                                ),
+                            })
+                            self.save_state()
 
             if fresh_results and not self.stop_event.is_set():
                 self.handle_draining_full_scan_results(fresh_results)
@@ -579,27 +589,9 @@ class ProbingMixin:
         with self.lock:
             if self.state['jobs']['latency'].get('running'):
                 return False
-            targets = [
-                item for item in self.candidates
-                if candidate_ids is None or item.id in candidate_ids
-            ]
-            checking_ids = {item.id for item in targets}
-            runtime_target_count = 0
-            requested_ids = set(candidate_ids or [])
-            for slot_tag, slot in self.slots.items():
-                if not slot.running():
-                    continue
-                represented = any(
-                    self.same_outbound(candidate, slot.candidate)
-                    for candidate in targets
-                )
-                target_id = self.slot_candidate_id(slot_tag)
-                requested = candidate_ids is None or target_id in requested_ids
-                if represented or not requested:
-                    continue
-                checking_ids.add(target_id)
-                runtime_target_count += 1
-            total = len(targets) + runtime_target_count
+            target_groups = self.latency_target_groups(candidate_ids)
+            checking_ids = {target.id for group in target_groups for target in group}
+            total = len(checking_ids)
             if not hasattr(self, 'latency_checking_ids'):
                 self.latency_checking_ids = set()
             self.latency_checking_ids.update(checking_ids)
@@ -615,7 +607,7 @@ class ProbingMixin:
             self.save_state()
             threading.Thread(
                 target=self.latency_job,
-                args=(candidate_ids, switch_to_best, source, getattr(self, 'manual_generation', 0)),
+                args=(candidate_ids, switch_to_best, source, getattr(self, 'manual_generation', 0), target_groups),
                 daemon=True,
             ).start()
             return True

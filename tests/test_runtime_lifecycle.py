@@ -211,7 +211,12 @@ def test_auto_checker_loop_threshold_triggers_emergency_failover(
 def test_run_starts_background_workers_and_all_servers(m, manager_factory, monkeypatch):
     instance = manager_factory()
     instance.stop_event = WaitSequence(True)
-    instance.initialize = lambda: None
+    def offline_start():
+        assert started_targets == ["serve_forever"] * 3
+        raise RuntimeError("outbounds unavailable")
+
+    instance.prepare_runtime_environment = lambda: None
+    instance.initialize = offline_start
     instance.request_latency_test = lambda *args, **kwargs: True
     instance.effective_latency_test_parallelism = lambda _count: 2
     instance.detect_ingress_port = lambda: 8124
@@ -251,6 +256,8 @@ def test_run_starts_background_workers_and_all_servers(m, manager_factory, monke
         ("0.0.0.0", 8124),
         ("0.0.0.0", m.common.WATCHDOG_PORT),
     }
+    assert instance.waiting_for_first_outbound
+    assert instance.state['subscription_error'] == 'outbounds unavailable'
     assert len(started_targets) == 10  # seven workers and three servers
 
 

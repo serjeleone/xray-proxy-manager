@@ -136,6 +136,7 @@ RUNTIME_SETTING_KEYS = {
     'auto_switch_preferred_country',
     'auto_switch_preferred_protocol',
     'auto_switch_excluded',
+    'excluded_check_strategy',
     'auto_switch_min_ping_delta_ms',
     'auto_check_interval_seconds',
     'auto_check_failures',

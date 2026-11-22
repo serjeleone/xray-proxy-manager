@@ -171,7 +171,7 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
         if path.endswith('/api/health'):
             status = self.manager.status_payload()
             xray_running = bool(status.get('xray_running'))
-            healthy = xray_running
+            healthy = xray_running or getattr(self.manager, 'waiting_for_first_outbound', False)
             self.send_json({
                 'ok': healthy,
                 'xray_running': xray_running,
@@ -235,6 +235,11 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
         path = urlparse(self.path).path.rstrip('/')
         try:
             payload = self.read_json()
+            if (path.endswith(('/api/select', '/api/test', '/api/mode', '/api/preferences',
+                               '/api/preferred-country', '/api/drain/stop'))
+                    and getattr(self.manager, 'state', {}).get('jobs', {}).get('refresh', {}).get('startup')):
+                self.send_json({'ok': False, 'error': 'Идёт стартовая проверка outbound'}, 409)
+                return
             if path.endswith('/api/select'):
                 self.manager.select_candidate(str(payload.get('id') or ''))
                 self.send_json({'ok': True})

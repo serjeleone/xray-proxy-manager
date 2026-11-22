@@ -44,6 +44,7 @@ options:
   auto_switch_preferred_country: ""
   auto_switch_preferred_protocol: ""
   auto_switch_excluded: "RU"
+  excluded_check_strategy: low
   auto_switch_min_ping_delta_ms: 100
   auto_check_interval_seconds: 60
   auto_best_check_interval_seconds: 600
@@ -103,6 +104,7 @@ schema:
   auto_switch_preferred_country: str?
   auto_switch_preferred_protocol: str?
   auto_switch_excluded: str
+  excluded_check_strategy: list(standard|low|skip)
   auto_switch_min_ping_delta_ms: int(0,10000)
   auto_check_interval_seconds: int(10,86400)
   auto_best_check_interval_seconds: int(60,86400)

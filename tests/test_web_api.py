@@ -84,6 +84,8 @@ def test_health_returns_503_when_xray_is_down(m, web_server):
         urllib.request.urlopen(f"{base}/api/health")
     assert error.value.code == 503
     assert json.loads(error.value.read())["ok"] is False
+    manager.waiting_for_first_outbound = True
+    assert get_json(f"{base}/api/health") == (200, {"ok": True, "xray_running": False})
 
 
 @pytest.mark.parametrize(

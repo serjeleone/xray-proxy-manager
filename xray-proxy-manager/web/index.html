@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=37">
+  <link rel="stylesheet" href="style.css?ui=38">
 </head>
 <body>
   <main class="shell">
@@ -46,7 +46,7 @@
           <svg class="traffic-icon icon-error" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7h2v7h-2V7Zm0 9h2v2h-2v-2Z"/></svg>
         </button>
         <h2><button id="switchHistoryToggle" class="outbound-history-toggle" type="button" aria-controls="switchHistory" aria-expanded="false" title="Показать график переключений за 12 часов"><span id="activeName">Активный outbound не определён</span></button></h2>
-        <div id="throughputBadge" class="throughput-badge" title="Входящая скорость активного слота"><span id="throughputValue">0.0 МБ/с</span></div>
+        <button type="button" id="throughputBadge" class="throughput-badge" disabled aria-label="Переключить на следующий outbound" title="Входящая скорость активного слота"><span id="throughputValue">0.0 МБ/с</span></button>
       </div>
 
       <div class="hero-details">
@@ -151,6 +151,14 @@
           <label>
             <span>Исключить из выбора</span>
             <input id="autoSwitchExcluded" type="text" maxlength="512" inputmode="text" autocomplete="off" placeholder="RU, Лучший сервер">
+          </label>
+          <label>
+            <span>Проверка исключённых outbound</span>
+            <select id="excludedCheckStrategy">
+              <option value="standard">Стандартно</option>
+              <option value="low" selected>Низкий приоритет</option>
+              <option value="skip">Без проверки</option>
+            </select>
           </label>
           <label>
             <span>Разница по пингу, мс</span>
@@ -298,6 +306,6 @@
     </div>
   </div>
 
-  <script src="app.js?ui=30"></script>
+  <script src="app.js?ui=31"></script>
 </body>
 </html>

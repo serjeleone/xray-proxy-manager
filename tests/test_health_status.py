@@ -162,6 +162,36 @@ def test_request_latency_test_tracks_subscription_and_runtime_slots(m, manager_f
     assert not instance.request_latency_test()
 
 
+def test_excluded_check_strategy_applies_only_to_full_scans(manager_factory, candidate_factory):
+    blocked = candidate_factory("excluded", country="RU")
+    regular = candidate_factory("regular", country="FI")
+    instance = manager_factory([blocked, regular])
+    instance.latency_test_parallelism = -1
+    checked = []
+
+    def probe(candidate):
+        if instance.excluded_check_strategy == "low" and candidate is blocked:
+            assert regular.id in instance.latencies
+        checked.append(candidate.id)
+        return {"status": "ok", "latency_ms": 15}
+
+    instance.test_candidate_for_full_scan = probe
+    instance.latency_job()
+    assert checked == [regular.id, blocked.id]
+    assert instance.latencies[blocked.id]["status"] == "ok"
+    instance.excluded_check_strategy = "skip"
+    checked.clear()
+    instance.latency_job()
+    assert checked == [regular.id]
+    assert instance.state["jobs"]["latency"]["total"] == 1
+    instance.latency_job([blocked.id])
+    assert checked[-1] == blocked.id
+    instance.excluded_check_strategy = "standard"
+    groups = instance.latency_target_groups(None)
+    assert [item.id for item in groups[0]] == [blocked.id, regular.id]
+
+
+
 def test_draining_results_reset_and_force_stop_threshold(m, manager_factory, candidate_factory):
     candidate = candidate_factory("drain")
     instance = manager_factory([])

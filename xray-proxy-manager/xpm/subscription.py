@@ -596,21 +596,27 @@ class SubscriptionMixin:
                         'configuration will be applied on the next explicit selection'
                     )
 
-        except Exception:
+        except Exception as exc:
             with self.lock:
-                self.subscription = old_subscription
-                self.candidates = old_candidates
+                # On a fresh install there is no working subscription to restore.
+                # Keep validated structure and failed pings available for a retry in the UI.
+                if initial and not old_subscription and isinstance(exc, xpm_errors.ProbeFailure):
+                    self.state['subscription_error'] = str(exc)
+                    self.save_latencies()
+                else:
+                    self.subscription = old_subscription
+                    self.candidates = old_candidates
+                    self.state['candidate_identities'] = old_identities
+                    self.candidate_aliases = old_aliases
+                    self.latencies = old_latencies
+                    self.state['subscription_error'] = (
+                        'Загруженную подписку не удалось применить; предыдущая рабочая '
+                        'подписка сохранена.'
+                    )
                 self.active_candidate_id = old_active_id
                 self.active_slot_tag = old_active_slot_tag
                 self.state['active_candidate_id'] = old_active_id
                 self.state['active_slot_tag'] = old_active_slot_tag
-                self.state['candidate_identities'] = old_identities
-                self.candidate_aliases = old_aliases
-                self.latencies = old_latencies
-                self.state['subscription_error'] = (
-                    'Загруженную подписку не удалось применить; предыдущая рабочая '
-                    'подписка сохранена.'
-                )
                 self.state['subscription_last_error_at'] = xpm_common.now_ts()
                 self.save_state()
             raise

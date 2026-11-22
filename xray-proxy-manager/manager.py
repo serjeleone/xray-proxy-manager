@@ -272,7 +272,7 @@ class XrayManager(
             remembered_slot if self.dual_slot_enabled and remembered_slot in common.SLOT_TAGS else 'xray-a'
         )
         self.started_at = common.now_ts()
-        self.home_assistant_host = self.detect_home_assistant_host()
+        self.home_assistant_host = 'host'
         self.next_update_at = (
             common.now_ts() + self.update_interval_hours * 3600
             if self.update_interval_hours > 0 else None
@@ -319,14 +319,18 @@ class XrayManager(
             'key_name': self.router_ssh_key_name if self.router_auth_method != 'password' else '',
             'public_key': '',
         }
-        self.prepare_router_auth()
         self.socks_listen_address = str(ipaddress.ip_address(
             str(self.options.get('socks_listen_address') or '0.0.0.0')
         ))
+        self.socks_allowed_cidrs: list[str] = []
+        self.options_migration_pending = bool(base_changed or runtime_changed)
+
+    def prepare_runtime_environment(self) -> None:
+        self.home_assistant_host = self.detect_home_assistant_host()
+        self.prepare_router_auth()
         self.socks_allowed_cidrs = self.resolve_socks_allowed_cidrs(
             self.options.get('socks_allowed_cidrs', ['0.0.0.0/0'])
         )
-        self.options_migration_pending = bool(base_changed or runtime_changed)
         if self.options_migration_pending:
             migrated, migration_error = self.sync_supervisor_options()
             if migrated:
@@ -338,8 +342,9 @@ class XrayManager(
     def initialize(self) -> None:
         cached = self.load_cached_subscription()
         if cached:
-            self.subscription = cached
-            self.candidates = self.extract_candidates(cached)
+            with self.lock:
+                self.subscription = cached
+                self.candidates = self.extract_candidates(cached)
         try:
             self.refresh_subscription_sync(initial=True)
         except Exception as exc:
@@ -393,26 +398,10 @@ class XrayManager(
                     self.start_xray()
 
     def run(self) -> None:
-        self.initialize()
-        if self.auto_checker_enabled:
-            accepted = self.request_latency_test(
-                None,
-                switch_to_best=self.auto_switch_best_enabled,
-                source='startup',
-            )
-            if accepted:
-                common.log(
-                    'startup latency check started in background '
-                    f'(parallelism {self.effective_latency_test_parallelism(len(self.candidates))})'
-                )
-        threading.Thread(target=self.auto_checker_loop, daemon=True).start()
-        threading.Thread(target=self.periodic_update_loop, daemon=True).start()
-        threading.Thread(target=self.xray_monitor_loop, daemon=True).start()
-        threading.Thread(target=self.drain_monitor_loop, daemon=True).start()
-        threading.Thread(target=self.selector_status_loop, daemon=True).start()
-        threading.Thread(target=self.active_throughput_loop, daemon=True).start()
-        threading.Thread(target=self.router_status_loop, daemon=True).start()
-
+        self.waiting_for_first_outbound = True
+        self.state['jobs']['refresh'].update(
+            running=True, startup=True, message='Загрузка подписки и проверка стартового outbound…',
+        )
         handler_factory = lambda *args, **kwargs: web.WebHandler(self, *args, **kwargs)
         ingress_port = self.detect_ingress_port()
         if ingress_port == common.WATCHDOG_PORT:
@@ -450,6 +439,40 @@ class XrayManager(
         self.servers.append(watchdog_server)
         threading.Thread(target=watchdog_server.serve_forever, daemon=True).start()
         common.log(f'watchdog health endpoint is listening on 0.0.0.0:{common.WATCHDOG_PORT}')
+
+        self.prepare_runtime_environment()
+        try:
+            self.initialize()
+            self.waiting_for_first_outbound = False
+        except Exception as exc:
+            common.log(f'initial Xray setup failed: {exc}', error=True)
+            with self.lock:
+                self.state['subscription_error'] = str(exc)
+                self.state['subscription_last_error_at'] = common.now_ts()
+                self.save_state()
+        finally:
+            with self.lock:
+                self.state['jobs']['refresh'].update(running=False, startup=False, message='')
+        if self.stop_event.is_set():
+            return
+        if self.auto_checker_enabled:
+            accepted = self.request_latency_test(
+                None,
+                switch_to_best=self.auto_switch_best_enabled,
+                source='startup',
+            )
+            if accepted:
+                common.log(
+                    'startup latency check started in background '
+                    f'(parallelism {self.effective_latency_test_parallelism(len(self.candidates))})'
+                )
+        threading.Thread(target=self.auto_checker_loop, daemon=True).start()
+        threading.Thread(target=self.periodic_update_loop, daemon=True).start()
+        threading.Thread(target=self.xray_monitor_loop, daemon=True).start()
+        threading.Thread(target=self.drain_monitor_loop, daemon=True).start()
+        threading.Thread(target=self.selector_status_loop, daemon=True).start()
+        threading.Thread(target=self.active_throughput_loop, daemon=True).start()
+        threading.Thread(target=self.router_status_loop, daemon=True).start()
 
         while not self.stop_event.wait(1):
             pass

@@ -148,6 +148,7 @@ def manager_factory(m, candidate_factory, tmp_path):
         instance.switching_preset = "smooth"
         instance.auto_switch_preferred_country = ""
         instance.auto_switch_preferred_protocol = ""
+        instance.excluded_check_strategy = 'low'
         instance.auto_switch_excluded = "RU"
         instance.auto_switch_min_ping_delta_ms = 100
         instance.auto_check_interval_seconds = 60

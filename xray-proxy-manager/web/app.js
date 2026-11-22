@@ -237,6 +237,7 @@ function autoCheckerFormValues() {
     auto_best_check_interval_seconds: Number.parseInt($('autoBestCheckInterval').value, 10),
     auto_switch_preferred_country: $('autoSwitchPreferredCountry').value,
     auto_switch_preferred_protocol: $('autoSwitchPreferredProtocol').value,
+    excluded_check_strategy: $('excludedCheckStrategy').value,
     auto_switch_excluded: normalizeAutoSwitchExclusions($('autoSwitchExcluded').value),
     auto_switch_min_ping_delta_ms: Number.parseInt($('autoSwitchMinPingDelta').value, 10),
   };
@@ -397,6 +398,15 @@ function renderCandidates(payload) {
   $('candidateCount').textContent = `Показано ${items.length} из ${total}` +
     (hiddenByFilters ? ` · скрыто фильтрами ${hiddenByFilters}` : '');
 
+  const switching = Boolean(
+    payload.jobs?.refresh?.startup || payload.jobs?.switch?.running || state.switchInFlight || state.modeInFlight
+  );
+  const activeIndex = items.findIndex((item) => candidateRuntimeState(item, payload).active);
+  const next = items[activeIndex + 1];
+  const badge = $('throughputBadge');
+  badge.dataset.nextId = next?.id || '';
+  badge.disabled = !next || switching;
+
   if (!items.length) {
     $('outboundList').innerHTML = '<div class="empty">Ни один outbound не соответствует выбранным фильтрам.</div>';
     return;
@@ -405,7 +415,6 @@ function renderCandidates(payload) {
   const operationRunning = Boolean(
     payload.jobs?.latency?.running || payload.jobs?.refresh?.running || payload.jobs?.switch?.running
   );
-  const switching = Boolean(payload.jobs?.switch?.running || state.switchInFlight || state.modeInFlight);
   $('outboundList').innerHTML = items.map((item) => {
     const runtime = candidateRuntimeState(item, payload);
     const slotTags = runtime.slotTags;
@@ -555,6 +564,7 @@ function initializeSettings(payload) {
   renderPreferredProtocols(payload);
   $('autoSwitchPreferredProtocol').value = checker.preferred_protocol || '';
   state.preferredProtocolDraft = null;
+  $('excludedCheckStrategy').value = checker.excluded_check_strategy || 'low';
   $('autoSwitchExcluded').value = checker.excluded ?? 'RU';
   $('autoSwitchMinPingDelta').value = checker.min_ping_delta_ms ?? 100;
   $('subscriptionUrl').value = subscription.url || '';
@@ -583,7 +593,7 @@ function render(payload) {
   renderTraffic(payload);
   renderRuntimeStatus(payload);
   const active = payload.active;
-  $('activeName').textContent = active?.name || 'Активный outbound не определён';
+  if (!state.switchInFlight) $('activeName').textContent = active?.name || 'Активный outbound не определён';
   const blueGreen = payload.blue_green || {};
   const modeLabel = blueGreen.mode === 'single' ? 'Однослотовый режим' : 'Двухслотовый режим';
   $('xrayState').textContent = `${payload.xray_running ? 'Xray работает' : 'Xray остановлен'} · ${modeLabel}`;
@@ -660,7 +670,7 @@ function render(payload) {
   const running = Boolean(latencyJob.running || refreshJob.running || switchJob.running);
   $('testAllButton').disabled = running;
   $('refreshButton').disabled = running;
-  $('slotModeButton').disabled = Boolean(switchJob.running || state.switchInFlight || state.modeInFlight);
+  $('slotModeButton').disabled = Boolean(refreshJob.startup || switchJob.running || state.switchInFlight || state.modeInFlight);
   $('slotModeButton').textContent = blueGreen.dual_slot_enabled ? 'Режим: 2 слота' : 'Режим: 1 слот';
   if (running) {
     $('jobBanner').classList.remove('hidden');
@@ -773,7 +783,7 @@ function renderSwitchHistory() {
   const y = (count) => bottom - count / max * (bottom - top);
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('aria-label', history
-    ? `Переключений за последние 12 часов: ${history.total}. Интервал — 5 минут.`
+    ? `Переключений за последние 12 часов: ${history.total}. Интервал — 30 минут.`
     : 'Статистика переключений недоступна');
   svg.replaceChildren();
   for (let i = 0; i <= 3; i++) {
@@ -804,7 +814,7 @@ function renderSwitchHistory() {
   // Straight segments preserve the exact counts: no spline overshoot below 0
   // or smoothing that would hide a switch in the still-open current bucket.
   const line = points.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ');
-  svg.append(make('path', { d: `${line} L${right},${bottom} L${left},${bottom} Z`, fill: 'var(--spotify)', 'fill-opacity': .7 }),
+  svg.append(make('path', { d: `${line} L${right},${bottom} L${left},${bottom} Z`, fill: 'var(--spotify)', 'fill-opacity': .6 }),
     make('path', { d: line, class: 'chart-line' }));
   switchChart.geometry = { left, right, history };
 }
@@ -1084,6 +1094,7 @@ function statusRefreshPaused() {
 }
 
 async function fetchStatus(force = false) {
+  if (!force && state.switchInFlight) return;
   if (!force && statusRefreshPaused()) {
     state.statusRefreshDeferred = true;
     return;
@@ -1220,17 +1231,24 @@ function downloadLogs() {
 }
 
 async function selectCandidate(id) {
-  if (state.switchInFlight || state.modeInFlight) return;
+  if (state.switchInFlight || state.modeInFlight || state.payload?.jobs?.switch?.running) return;
   state.switchInFlight = true;
   if (state.payload) renderCandidates(state.payload);
+  const name = $('activeName');
+  const duration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180;
+  const fadeOut = name.animate([{ opacity: 1 }, { opacity: 0 }], { duration, fill: 'forwards' });
   try {
     toast('Переключение outbound…');
     await post('api/select', { id });
     toast('Outbound переключён');
   } catch (error) { toast(`Ошибка: ${error.message}`, true); }
   finally {
+    await Promise.all([fadeOut.finished, fetchStatus(true)]);
+    name.textContent = state.payload?.active?.name || 'Активный outbound не определён';
+    fadeOut.cancel();
+    await name.animate([{ opacity: 0 }, { opacity: 1 }], { duration }).finished;
     state.switchInFlight = false;
-    await fetchStatus(true);
+    if (state.payload) render(state.payload);
   }
 }
 
@@ -1396,6 +1414,10 @@ function scheduleFilterSave() {
   }, 500);
 }
 
+$('throughputBadge').addEventListener('click', (event) => {
+  const id = event.currentTarget.dataset.nextId;
+  if (id) selectCandidate(id);
+});
 $('switchHistoryToggle').addEventListener('click', toggleSwitchHistory);
 $('switchHistoryChart').addEventListener('pointermove', inspectSwitchHistory);
 $('switchHistoryChart').addEventListener('pointerdown', inspectSwitchHistory);
@@ -1467,8 +1489,8 @@ $('copyRouterKey').addEventListener('click', async () => {
 });
 $('saveAutoChecker').addEventListener('click', saveAutoChecker);
 $('saveSubscription').addEventListener('click', saveSubscriptionSettings);
-['autoCheckerEnabled', 'autoSwitchBestEnabled', 'switchingPreset', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
-  $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled', 'switchingPreset'].includes(id) ? 'change' : 'input', updateSaveButtons);
+['autoCheckerEnabled', 'autoSwitchBestEnabled', 'excludedCheckStrategy', 'switchingPreset', 'autoCheckInterval', 'autoCheckFailures', 'autoCheckMaxLatency', 'autoBestCheckInterval', 'autoSwitchExcluded', 'autoSwitchMinPingDelta'].forEach((id) => {
+  $(id).addEventListener(['autoCheckerEnabled', 'autoSwitchBestEnabled', 'excludedCheckStrategy', 'switchingPreset'].includes(id) ? 'change' : 'input', updateSaveButtons);
 });
 $('autoSwitchPreferredCountry').addEventListener('change', () => {
   state.preferredCountryDraft = $('autoSwitchPreferredCountry').value;

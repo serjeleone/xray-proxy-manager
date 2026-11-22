@@ -25,6 +25,9 @@ class SettingsMixin:
         self.auto_switch_preferred_protocol = xpm_common.normalize_preferred_protocol(
             source.get('auto_switch_preferred_protocol', '')
         )
+        self.excluded_check_strategy = str(source.get('excluded_check_strategy', 'low'))
+        if self.excluded_check_strategy not in {'standard', 'low', 'skip'}:
+            raise ValueError('Неизвестный режим проверки исключённых outbound')
         self.auto_switch_excluded = xpm_common.normalize_auto_switch_exclusions(
             source.get('auto_switch_excluded', 'RU')
         )
@@ -79,6 +82,10 @@ class SettingsMixin:
                 normalized[key] = xpm_common.normalize_preferred_country(value)
             elif key == 'auto_switch_preferred_protocol':
                 normalized[key] = xpm_common.normalize_preferred_protocol(value)
+            elif key == 'excluded_check_strategy':
+                if value not in ('standard', 'low', 'skip'):
+                    raise ValueError('Неизвестный режим проверки исключённых outbound')
+                normalized[key] = value
             elif key == 'auto_switch_excluded':
                 normalized[key] = xpm_common.normalize_auto_switch_exclusions(value)
             elif key == 'auto_switch_min_ping_delta_ms':

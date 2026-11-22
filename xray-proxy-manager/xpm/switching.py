@@ -214,6 +214,7 @@ class SwitchingMixin:
                         })
 
             self.active_candidate_id = candidate.id
+            self.waiting_for_first_outbound = False
             self.state['last_switch_at'] = xpm_common.now_ts()
             self.state['last_switch_reason'] = reason
             self.state['last_switch_source'] = source
