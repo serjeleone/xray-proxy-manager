@@ -731,7 +731,8 @@ body.modal-open { overflow: hidden; }
 .traffic-button.paused .icon-pause,
 .traffic-button.error .icon-error,
 .traffic-button.unknown .icon-error { display: block; }
-.icon-play { transform: translateX(2px); }
+.icon-play { transform: translateX(2px) scale(1.3); }
+.icon-pause { transform: scale(1.3); }
 .hero-details { overflow: visible; }
 #activeMeta {
   display: block;
