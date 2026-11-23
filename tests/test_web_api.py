@@ -82,6 +82,20 @@ def test_health_status_logs_and_static_routes(m, web_server):
         assert response.read() == b"index"
 
 
+def test_entry_page_embeds_current_status_for_each_ingress_visit(m, web_server):
+    manager, base = web_server
+    template = b'<script type="application/json"><!--XPM_STATUS--></script>'
+    (m.common.WEB_ROOT / 'index.html').write_bytes(template)
+    for slot in ('xray-a', 'xray-b'):
+        status = {'active_slot': slot, 'name': 'Сервер <CH> & 🇨🇭'}
+        manager.status_payload = lambda: status
+        with urllib.request.urlopen(base + '/ingress/test/') as response:
+            assert 'no-store' in response.headers['Cache-Control']
+            data = response.read().decode().split('>', 1)[1].removesuffix('</script>')
+            assert '<' not in data
+            assert json.loads(data) == status
+
+
 def test_health_returns_503_when_xray_is_down(m, web_server):
     manager, base = web_server
     manager.slots['xray-a'].process = None

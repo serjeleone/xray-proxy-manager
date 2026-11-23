@@ -206,7 +206,7 @@ def card_names(page: Page) -> list[str]:
 def test_initial_render_exposes_runtime_state_and_dynamic_preferences(page: Page, web_app_html: str) -> None:
     open_app(page, web_app_html)
 
-    expect(page.locator("#xrayState")).to_have_text("Xray работает · Двухслотовый режим")
+    expect(page.locator("#xrayState")).to_have_text("Xray работает · xray-b · Двухслотовый режим")
     expect(page.locator("#activeMeta")).to_contain_text("192.0.2.250:10809 (SOCKS)")
     expect(page.locator("#selectorHint")).to_have_text(
         "Текущий активный селектор: [xray-b] · Завершение соединений селектора [xray-a] в количестве: 14 шт."
@@ -399,7 +399,14 @@ def test_opening_ui_does_not_show_startup_panel(page: Page, web_app_html: str):
     harness = ApiHarness(base_payload())
     page.route("**/api/**", harness.handler)
     page.route("**/api/status", lambda route: pending.append(route))
-    page.set_content(web_app_html, wait_until="domcontentloaded")
+    snapshot = dict(harness.payload, throughput=harness.throughput)
+    page.route("**/api/throughput", lambda route: None)
+    page.set_content(web_app_html.replace('<!--XPM_STATUS-->', json.dumps(snapshot)), wait_until="domcontentloaded")
+    expect(page.locator('#activeName')).to_have_text('Active Finland')
+    expect(page.locator('#xrayState')).to_contain_text('xray-b')
+    expect(page.locator('#throughputValue')).to_have_text('15.4 МБ/с')
+    expect(page.locator('#subscriptionUrl')).to_have_value(snapshot['subscription']['url'])
+    expect(page.locator('#autoCheckerEnabled')).to_be_checked()
     panel = page.locator('#startupPanel')
     expect(panel).to_be_hidden()
     expect(page.locator('#activeName')).to_be_visible()
@@ -414,12 +421,18 @@ def test_opening_ui_does_not_show_startup_panel(page: Page, web_app_html: str):
 def test_startup_panel_replaces_only_status_until_ready(page: Page, web_app_html: str, width: int):
     page.set_viewport_size({'width': width, 'height': 900})
     payload = base_payload()
-    steps = ['Загрузка подписки', 'Проверка внешнего правила OpenWrt']
-    payload['jobs']['refresh'].update(startup=True, running=True, steps=steps)
+    job = payload['jobs']['refresh']
+    job.update(startup=True, running=True, stage=3, message='Выбор рабочего outbound', detail='Проверка outbound · попытка 2 из 40')
     harness = open_app(page, web_app_html, payload)
     panel = page.locator('#startupPanel')
     expect(panel).to_be_visible()
-    expect(page.locator('#startupSteps li')).to_have_text(steps)
+    expect(page.locator('#startupTitle')).to_have_text('Выбор рабочего outbound · 3 из 4')
+    expect(page.locator('#startupDetail')).to_have_text('Проверка outbound · попытка 2 из 40')
+    height = panel.bounding_box()['height']
+    harness.payload['jobs']['refresh']['detail'] = 'Проверка outbound · попытка 39 из 40'
+    page.evaluate('fetchStatus(true)')
+    expect(page.locator('#startupDetail')).to_have_text('Проверка outbound · попытка 39 из 40')
+    assert panel.bounding_box()['height'] == height
     expect(page.locator('#heroInfoStage')).to_be_hidden()
     header = [page.locator(selector) for selector in ('#trafficButton', '#activeName', '#throughputBadge')]
     for item in header:
@@ -433,6 +446,26 @@ def test_startup_panel_replaces_only_status_until_ready(page: Page, web_app_html
     expect(panel).to_be_hidden()
     expect(page.locator('#heroInfoStage')).to_be_visible()
     assert [item.bounding_box() for item in header] == positions
+
+
+@pytest.mark.parametrize('width', [320, 390, 1440])
+def test_long_outbound_title_clamps_to_three_lines(page: Page, web_app_html: str, width: int):
+    page.set_viewport_size({'width': width, 'height': 900})
+    harness = open_app(page, web_app_html)
+    name = page.locator('#activeName')
+    harness.payload['active']['name'] = '🇨🇭 Швейцария ' + 'proxy-wl-teplomontag-xyz-direct-' * 12
+    page.evaluate('fetchStatus(true)')
+    metrics = name.evaluate("""el => ({
+        height: el.clientHeight, content: el.scrollHeight,
+        line: parseFloat(getComputedStyle(el).lineHeight),
+        clamp: getComputedStyle(el).webkitLineClamp
+    })""")
+    assert metrics['clamp'] == '3'
+    assert metrics['content'] > metrics['height']
+    harness.payload['active']['name'] = 'CH'
+    page.evaluate('fetchStatus(true)')
+    one_line = name.bounding_box()['height']
+    assert abs(metrics['height'] - one_line - 2 * metrics['line']) <= 2
 
 
 def test_traffic_control_and_repeated_mode_changes_follow_server_state(page: Page, web_app_html: str) -> None:

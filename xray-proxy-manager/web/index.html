@@ -6,10 +6,12 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=40">
+  <link rel="stylesheet" href="style.css?ui=41">
+  <script id="initialStatus" type="application/json"><!--XPM_STATUS--></script>
+  <script src="app.js?ui=34" defer blocking="render"></script>
 </head>
 <body>
-  <main class="shell">
+  <main class="shell" style="visibility: hidden">
     <header class="topbar">
       <div class="topbar-title">
         <div class="eyebrow">HOME ASSISTANT APP</div>
@@ -46,13 +48,13 @@
           <svg class="traffic-icon icon-error" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7h2v7h-2V7Zm0 9h2v2h-2v-2Z"/></svg>
         </button>
         <h2><button id="switchHistoryToggle" class="outbound-history-toggle" type="button" aria-controls="switchHistory" aria-expanded="false" title="Показать график переключений за 12 часов"><span id="activeName">Активный outbound не определён</span></button></h2>
-        <button type="button" id="throughputBadge" class="throughput-badge" disabled aria-label="Переключить на следующий outbound" title="Входящая скорость активного слота"><span id="throughputValue">0.0 МБ/с</span></button>
+        <button type="button" id="throughputBadge" class="throughput-badge" disabled aria-label="Переключить на следующий outbound" title="Входящая скорость активного слота"><span id="throughputValue">— МБ/с</span></button>
       </div>
 
       <div class="hero-details">
-        <section id="startupPanel" class="startup-panel" aria-labelledby="startupTitle">
+        <section id="startupPanel" class="startup-panel" aria-live="polite" aria-labelledby="startupTitle">
           <strong id="startupTitle">Запуск приложения…</strong>
-          <ol id="startupSteps" aria-live="polite"><li>Ожидание данных о запуске</li></ol>
+          <div id="startupDetail"></div>
         </section>
         <div id="heroInfoStage" class="hero-info-stage">
           <div id="heroInfoText" class="hero-info-text">
@@ -310,6 +312,5 @@
     </div>
   </div>
 
-  <script src="app.js?ui=33"></script>
 </body>
 </html>

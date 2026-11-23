@@ -326,21 +326,21 @@ class XrayManager(
         self.socks_allowed_cidrs: list[str] = []
         self.options_migration_pending = bool(base_changed or runtime_changed)
 
-    def startup_step(self, message: str) -> None:
+    def startup_step(self, stage: int, detail: str = '') -> None:
+        titles = ('Подготовка приложения', 'Загрузка подписки', 'Выбор рабочего outbound', 'Проверка маршрутизации')
         with self.lock:
             job = self.state['jobs']['refresh']
             if job.get('startup'):
-                job['steps'].append(message)
-                del job['steps'][:-64]
-                job['message'] = message
+                job.update(stage=stage, message=titles[stage - 1], detail=detail)
 
     def prepare_runtime_environment(self) -> None:
-        self.startup_step('Определение адреса Home Assistant')
+        self.startup_step(1)
+        common.log('startup: detecting Home Assistant address')
         self.home_assistant_host = self.detect_home_assistant_host()
         if self.router_control_enabled:
-            self.startup_step('Подготовка доступа к OpenWrt')
+            common.log('startup: preparing OpenWrt access')
         self.prepare_router_auth()
-        self.startup_step('Подготовка настроек SOCKS')
+        common.log('startup: resolving SOCKS access settings')
         self.socks_allowed_cidrs = self.resolve_socks_allowed_cidrs(
             self.options.get('socks_allowed_cidrs', ['0.0.0.0/0'])
         )
@@ -353,18 +353,17 @@ class XrayManager(
                 common.log(f'could not persist migrated options to Supervisor: {migration_error}', error=True)
 
     def initialize(self) -> None:
-        self.startup_step('Чтение сохранённой подписки')
+        self.startup_step(2)
         cached = self.load_cached_subscription()
         if cached:
             with self.lock:
                 self.subscription = cached
                 self.candidates = self.extract_candidates(cached)
         try:
-            self.startup_step('Загрузка подписки')
             self.refresh_subscription_sync(initial=True)
         except Exception as exc:
             common.log(f'initial subscription update failed: {exc}', error=True)
-            self.startup_step('Проверка сохранённой конфигурации')
+            self.startup_step(3, 'Проверка сохранённой конфигурации')
             if cached and self.candidates:
                 candidate = self.choose_initial_candidate()
                 try:
@@ -414,9 +413,8 @@ class XrayManager(
                     self.start_xray()
 
     def run(self) -> None:
-        self.state['jobs']['refresh'].update(
-            running=True, startup=True, steps=['Запуск веб-интерфейса'], message='Запуск веб-интерфейса',
-        )
+        self.state['jobs']['refresh'].update(running=True, startup=True)
+        self.startup_step(1)
         handler_factory = lambda *args, **kwargs: web.WebHandler(self, *args, **kwargs)
         ingress_port = self.detect_ingress_port()
         if ingress_port == common.WATCHDOG_PORT:
@@ -461,7 +459,7 @@ class XrayManager(
                 break
             except Exception as exc:
                 common.log(f'could not prepare startup environment: {exc}', error=True)
-                self.startup_step('Не удалось подготовить окружение. Повтор через 10 секунд.')
+                self.startup_step(1, 'Повтор через 10 секунд')
                 if self.stop_event.wait(10):
                     return
         if self.stop_event.is_set():
@@ -477,16 +475,14 @@ class XrayManager(
                 self.save_state()
         if self.stop_event.is_set():
             return
+        self.startup_step(4)
         if self.selector_control_enabled:
-            self.startup_step('Проверка активного селектора и учёта соединений')
             self.refresh_selector_status()
         if self.router_control_enabled:
-            self.startup_step('Проверка внешнего правила OpenWrt')
             self.refresh_router_status()
         if self.stop_event.is_set():
             return
         if self.auto_checker_enabled:
-            self.startup_step('Запуск фоновой проверки outbound')
             accepted = self.request_latency_test(
                 None,
                 switch_to_best=self.auto_switch_best_enabled,
@@ -506,8 +502,7 @@ class XrayManager(
         threading.Thread(target=self.router_status_loop, daemon=True).start()
 
         with self.lock:
-            self.state['jobs']['refresh'].update(running=False, startup=False, message='')
-            self.state['jobs']['refresh'].pop('steps', None)
+            self.state['jobs']['refresh'] = {'running': False, 'startup': False, 'message': ''}
 
         while not self.stop_event.wait(1):
             pass

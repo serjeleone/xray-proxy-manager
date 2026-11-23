@@ -148,6 +148,7 @@ class StatusMixin:
                 'started_at': self.started_at,
                 'switch_history': self.switch_history.payload(),
                 'xray_running': process_running,
+                'throughput': self.throughput_payload(),
                 'active': runtime_active_candidate.public(active_latency, True) if runtime_active_candidate else None,
                 'selected_active': selected.public(self.latencies.get(selected.id), selected.id == effective_id) if selected else None,
                 'observed_outbound_tag': active_slot.observed_outbound_tag,

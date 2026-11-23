@@ -30,7 +30,8 @@ class StatsMixin:
             previous_at = self._throughput_last_sample_at
             previous_bytes = getattr(self, '_throughput_download_bytes', 0)
             bytes_per_second = 0.0
-            if same_slot and previous_at is not None and sample_time > previous_at and current_bytes >= previous_bytes:
+            measured = same_slot and previous_at is not None and sample_time > previous_at and current_bytes >= previous_bytes
+            if measured:
                 bytes_per_second = (current_bytes - previous_bytes) / (sample_time - previous_at)
 
             self._throughput_last_slot = slot_tag
@@ -42,6 +43,7 @@ class StatsMixin:
                 xpm_common.log(f'throughput stats recovered for {slot_tag} ({source})')
             self.throughput_state.update({
                 'available': True,
+                'measured': measured,
                 'slot': slot_tag,
                 'source': source,
                 'bytes_per_second': bytes_per_second,
@@ -61,6 +63,7 @@ class StatsMixin:
             self._throughput_connection_download_bytes = {}
             self.throughput_state.update({
                 'available': False,
+                'measured': False,
                 'slot': slot_tag,
                 'source': '',
                 'bytes_per_second': 0.0,
@@ -168,4 +171,12 @@ class StatsMixin:
 
     def throughput_payload(self) -> dict[str, Any]:
         with self.lock:
-            return copy.deepcopy(self.throughput_state)
+            sample = self.throughput_state.copy()
+            slot = self.slots[self.active_slot_tag]
+            if sample['available'] and (
+                sample['slot'] != self.active_slot_tag or not slot.running()
+                or slot.process is not self._throughput_last_process
+                or self.switch_generation != self._throughput_last_generation
+            ):
+                sample.update(available=False, slot=self.active_slot_tag, bytes_per_second=0, megabytes_per_second=0)
+            return sample

@@ -221,7 +221,7 @@ def test_run_starts_background_workers_and_all_servers(m, manager_factory, monke
     def check_first_status():
         job = instance.state['jobs']['refresh']
         assert job['startup']
-        observed.append(job['steps'][-1])
+        observed.append((job['stage'], job['message']))
     instance.refresh_selector_status = check_first_status
     instance.refresh_router_status = check_first_status
     instance.request_latency_test = lambda *args, **kwargs: True
@@ -263,7 +263,7 @@ def test_run_starts_background_workers_and_all_servers(m, manager_factory, monke
         ("0.0.0.0", 8124),
         ("0.0.0.0", m.common.WATCHDOG_PORT),
     }
-    assert observed == ['Проверка активного селектора и учёта соединений', 'Проверка внешнего правила OpenWrt']
+    assert observed == [(4, 'Проверка маршрутизации')] * 2
     assert not instance.state['jobs']['refresh']['startup']
     assert instance.waiting_for_first_outbound
     assert instance.state['subscription_error'] == 'outbounds unavailable'

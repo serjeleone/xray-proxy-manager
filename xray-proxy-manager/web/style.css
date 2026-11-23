@@ -670,10 +670,7 @@ body.modal-open { overflow: hidden; }
 .hero-primary-row h2 {
   width: auto;
   max-height: none;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  display: block;
   overflow: hidden;
   overflow-wrap: normal;
   word-break: normal;
@@ -833,7 +830,6 @@ body.modal-open { overflow: hidden; }
 .logs-file-controls .logs-scroll-button { opacity: .82; }
 
 @media (max-width: 470px) {
-  .hero-primary-row h2 { -webkit-line-clamp: 2; line-clamp: 2; }
   .hero-actions { width: 100%; }
   .hero-stop { margin-left: 0; }
   .outbound-title-row { gap: 7px; }
@@ -972,6 +968,14 @@ body.modal-open { overflow: hidden; }
   background: none; color: inherit; font: inherit; letter-spacing: inherit;
   line-height: inherit; text-align: left; cursor: pointer;
 }
+#activeName {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 .outbound-history-toggle::after { display: none; }
 .outbound-history-toggle:focus-visible { outline-offset: -2px; }
 .switch-history {
@@ -1010,12 +1014,9 @@ body.modal-open { overflow: hidden; }
   border-radius: 13px;
   color: #ffcf84;
 }
-.startup-panel ol {
-  margin: 7px 0 0;
-  padding-left: 1.5em;
-  max-height: 11em;
-  overflow-y: auto;
-  overflow-wrap: anywhere;
+#startupDetail {
+  min-height: 1.5em;
+  margin-top: 4px;
   font-size: .82rem;
   line-height: 1.5;
 }

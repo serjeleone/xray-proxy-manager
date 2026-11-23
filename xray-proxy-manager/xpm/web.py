@@ -160,6 +160,10 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.send_error(404)
             return
+        if relative == 'index.html':
+            snapshot = json.dumps(self.manager.status_payload(), ensure_ascii=False, separators=(',', ':'))
+            # HTML parses script end tags even inside an application/json element.
+            body = body.replace(b'<!--XPM_STATUS-->', snapshot.replace('<', r'\u003c').encode('utf-8'), 1)
         self.send_response(200)
         self.send_header('Content-Type', content_type)
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')

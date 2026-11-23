@@ -27,7 +27,7 @@ def test_stats_failure_is_logged_once_and_recovers(m, manager_factory, isolated_
     assert any('deadline exceeded' in line for line in lines)
     instance.refresh_active_throughput()
     assert instance.throughput_payload()['available']
-    assert instance.throughput_payload()['bytes_per_second'] == 0  # Fresh baseline.
+    assert not instance.throughput_payload()['measured']  # One sample is only a baseline.
     assert instance._throughput_download_bytes == 1024
     lines, _ = m.common.ui_log_snapshot(100)
     assert sum('throughput stats recovered' in line for line in lines) == 1
@@ -109,7 +109,9 @@ def test_selector_error_does_not_substitute_frozen_xray_stats(manager_factory, m
     assert 'selector' in instance.throughput_payload()['error']
     instance.selector_connections = lambda **_kwargs: []
     instance.refresh_active_throughput()
-    assert instance.throughput_payload()['available']
+    assert not instance.throughput_payload()['measured']
+    instance.refresh_active_throughput()
+    assert instance.throughput_payload()['measured']
     assert instance.throughput_payload()['source'] == 'selector'
     lines, _ = m.common.ui_log_snapshot(100)
     assert sum('throughput stats unavailable' in line for line in lines) == 1

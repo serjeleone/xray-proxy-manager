@@ -23,8 +23,9 @@ def web_app_html() -> str:
         "const api = (path) => new URL(path.replace(/^\\//, ''), 'https://app.test/').toString();",
     )
     index = re.sub(r'<link rel="stylesheet" href="style\.css\?ui=\d+">', lambda _match: f"<style>{style}</style>", index)
-    index = re.sub(r'<script src="app\.js\?ui=\d+"></script>', lambda _match: f"<script>{script}</script>", index)
-    return index
+    # Inline the deferred production script after the DOM is available.
+    index = re.sub(r'<script src="app\.js\?ui=\d+" defer blocking="render"></script>', '', index)
+    return index.replace('</body>', f'<script>{script}</script></body>')
 
 
 @pytest.fixture(scope="session")

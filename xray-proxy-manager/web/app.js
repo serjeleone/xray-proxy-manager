@@ -586,20 +586,13 @@ function renderStartup(job) {
   $('heroCard').classList.toggle('starting', starting);
   $('switchHistoryToggle').disabled = starting;
   if (!starting) return;
-  const list = $('startupSteps');
-  const steps = job.steps?.length ? job.steps : [job.message || 'Ожидание данных о запуске'];
-  if (list.childElementCount === steps.length && list.lastElementChild?.textContent === steps.at(-1)) return;
-  const atEnd = list.scrollHeight - list.clientHeight - list.scrollTop < 2;
-  list.replaceChildren(...steps.map((message) => {
-    const item = document.createElement('li');
-    item.textContent = message;
-    return item;
-  }));
-  if (atEnd) list.scrollTop = list.scrollHeight;
+  $('startupTitle').textContent = `${job.message} · ${job.stage} из 4`;
+  $('startupDetail').textContent = job.detail || '';
 }
 
 function render(payload) {
   state.payload = payload;
+  if (payload.throughput) renderThroughput(payload.throughput);
   renderStartup(payload.jobs?.refresh);
   initializeSettings(payload);
   renderProtocols(payload.protocols || []);
@@ -619,7 +612,8 @@ function render(payload) {
   }
   const blueGreen = payload.blue_green || {};
   const modeLabel = blueGreen.mode === 'single' ? 'Однослотовый режим' : 'Двухслотовый режим';
-  $('xrayState').textContent = `${payload.xray_running ? 'Xray работает' : 'Xray остановлен'} · ${modeLabel}`;
+  const slotLabel = payload.xray_running && blueGreen.active_slot ? ` · ${blueGreen.active_slot}` : '';
+  $('xrayState').textContent = `${payload.xray_running ? 'Xray работает' : 'Xray остановлен'}${slotLabel} · ${modeLabel}`;
   const activeSlot = blueGreen.slots?.[blueGreen.active_slot];
   const haHost = payload.home_assistant_host || 'host';
   const inboundEndpoint = activeSlot
@@ -1153,10 +1147,12 @@ function renderThroughput(payload) {
   const badge = $('throughputBadge');
   const valueNode = $('throughputValue');
   if (!badge || !valueNode) return;
-  valueNode.textContent = payload?.available
+  const activeSlot = state.payload?.blue_green?.active_slot;
+  const available = payload?.available && payload.measured !== false && (!activeSlot || activeSlot === payload.slot);
+  valueNode.textContent = available
     ? formatThroughput(payload.megabytes_per_second) : '— МБ/с';
   const slot = payload?.slot || state.payload?.blue_green?.active_slot || '—';
-  badge.title = payload?.available
+  badge.title = available
     ? `Входящая скорость активного слота [${slot}]`
     : (payload?.error || 'Входящая скорость активного слота недоступна');
 }
@@ -1559,6 +1555,9 @@ async function pollStatus() {
   await fetchStatus();
   window.setTimeout(pollStatus, $('heroCard').classList.contains('starting') ? 1000 : 3000);
 }
+const initialStatus = $('initialStatus').textContent;
+if (initialStatus.startsWith('{')) render(JSON.parse(initialStatus));
+document.querySelector('main.shell').style.removeProperty('visibility');
 pollStatus();
 fetchThroughput();
 setInterval(fetchThroughput, 1000);
