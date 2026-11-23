@@ -732,10 +732,10 @@ body.modal-open { overflow: hidden; }
 .traffic-button.error .icon-error,
 .traffic-button.unknown .icon-error { display: block; }
 .icon-play,
-.icon-pause { opacity: .7; }
+.icon-pause { opacity: .9; }
 /* Center the filled triangle inside the circle at every icon size. */
-.icon-play { transform: translateX(5.53%) scale(1.3); }
-.icon-pause { transform: scale(1.3); }
+.icon-play { transform: translateX(5.11%) scale(1.2); }
+.icon-pause { transform: scale(1.2); }
 .hero-details { overflow: visible; }
 #activeMeta {
   display: block;
