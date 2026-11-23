@@ -107,7 +107,7 @@ class SwitchingMixin:
         finally:
             try:
                 with self.lock:
-                    self.state['jobs']['switch'].update({'running': False, 'message': ''})
+                    self.state['jobs']['switch'] = {'running': False, 'message': ''}
                     self.save_state()
             finally:
                 self.switch_lock.release()
@@ -294,6 +294,7 @@ class SwitchingMixin:
             with self.lock:
                 self.state['jobs']['switch'].update({
                     'running': True,
+                    'target_name': candidate.name,
                     'message': f'Подготовка {candidate.name}...',
                 })
                 self.save_state()
@@ -481,7 +482,7 @@ class SwitchingMixin:
         finally:
             try:
                 with self.lock:
-                    self.state['jobs']['switch'].update({'running': False, 'message': ''})
+                    self.state['jobs']['switch'] = {'running': False, 'message': ''}
                     self.save_state()
             except Exception as exc:
                 xpm_common.log(f'could not persist switch job state: {exc}', error=True)
@@ -710,6 +711,7 @@ class SwitchingMixin:
             with self.lock:
                 self.state['jobs']['switch'].update({
                     'running': True,
+                    'target_name': candidate.name,
                     'message': f'Однослотовое переключение на {candidate.name}...',
                 })
                 self.save_state()
@@ -824,7 +826,7 @@ class SwitchingMixin:
         finally:
             try:
                 with self.lock:
-                    self.state['jobs']['switch'].update({'running': False, 'message': ''})
+                    self.state['jobs']['switch'] = {'running': False, 'message': ''}
                     self.save_state()
             except Exception as exc:
                 xpm_common.log(f'could not persist switch job state: {exc}', error=True)

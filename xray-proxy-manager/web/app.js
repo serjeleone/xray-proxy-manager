@@ -584,6 +584,7 @@ function initializeSettings(payload) {
 function renderStartup(job) {
   const starting = Boolean(job?.startup);
   $('heroCard').classList.toggle('starting', starting);
+  $('switchHistoryToggle').disabled = starting;
   if (!starting) return;
   const list = $('startupSteps');
   const steps = job.steps?.length ? job.steps : [job.message || 'Ожидание данных о запуске'];
@@ -600,7 +601,6 @@ function renderStartup(job) {
 function render(payload) {
   state.payload = payload;
   renderStartup(payload.jobs?.refresh);
-  $('activeName').classList.toggle('switching', state.switchInFlight || Boolean(payload.jobs?.switch?.running));
   initializeSettings(payload);
   renderProtocols(payload.protocols || []);
   renderPreferredCountries(payload);
@@ -611,7 +611,12 @@ function render(payload) {
   renderTraffic(payload);
   renderRuntimeStatus(payload);
   const active = payload.xray_running ? payload.active : null;
-  if (!state.switchInFlight) $('activeName').textContent = active?.name || 'Активный outbound не определён';
+  const switchJob = payload.jobs?.switch || {};
+  if (!state.switchInFlight) {
+    const targetName = switchJob.running && switchJob.target_name;
+    $('activeName').textContent = targetName || active?.name || 'Активный outbound не определён';
+    $('activeName').classList.toggle('switching', Boolean(switchJob.running));
+  }
   const blueGreen = payload.blue_green || {};
   const modeLabel = blueGreen.mode === 'single' ? 'Однослотовый режим' : 'Двухслотовый режим';
   $('xrayState').textContent = `${payload.xray_running ? 'Xray работает' : 'Xray остановлен'} · ${modeLabel}`;
@@ -684,7 +689,6 @@ function render(payload) {
 
   const latencyJob = payload.jobs?.latency || {};
   const refreshJob = payload.jobs?.refresh || {};
-  const switchJob = payload.jobs?.switch || {};
   const running = Boolean(latencyJob.running || refreshJob.running || switchJob.running);
   $('testAllButton').disabled = running;
   $('refreshButton').disabled = running;
@@ -1130,7 +1134,6 @@ async function fetchStatus(force = false) {
     state.statusRefreshDeferred = false;
   } catch (error) {
     if (controller !== state.statusController) return;
-    if (!state.payload) $('startupSteps').firstElementChild.textContent = 'Ожидание ответа приложения…';
     $('statusDot').className = 'status-dot bad';
     $('xrayState').textContent = 'Интерфейс недоступен';
     toast(`Ошибка: ${error.message}`, true);
@@ -1258,18 +1261,25 @@ function downloadLogs() {
 
 async function selectCandidate(id) {
   if (state.switchInFlight || state.modeInFlight || state.payload?.jobs?.switch?.running) return;
+  const target = state.payload?.candidates?.find((item) => item.id === id);
+  if (!target) return;
   state.switchInFlight = true;
-  if (state.payload) renderCandidates(state.payload);
-  $('activeName').classList.add('switching');
+  const name = $('activeName');
+  const previousName = name.textContent;
+  name.textContent = target.name;
+  name.classList.add('switching');
+  renderCandidates(state.payload);
   try {
     toast('Переключение outbound…');
     await post('api/select', { id });
     toast('Outbound переключён');
-  } catch (error) { toast(`Ошибка: ${error.message}`, true); }
-  finally {
-    await fetchStatus(true);
+  } catch (error) {
+    name.textContent = previousName;
+    toast(`Ошибка: ${error.message}`, true);
+  } finally {
+    name.classList.remove('switching');
     state.switchInFlight = false;
-    if (state.payload) render(state.payload);
+    await fetchStatus(true);
   }
 }
 

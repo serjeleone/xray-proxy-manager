@@ -348,6 +348,9 @@ def test_speed_badge_uses_visible_order_and_ignores_repeated_clicks(page: Page, 
     expect(badge).to_be_disabled()
     name = page.locator('#activeName')
     expect(name).to_have_class('switching')
+    expect(name).to_have_text('Regular VLESS')
+    page.evaluate('fetchStatus(true)')
+    expect(name).to_have_text('Regular VLESS')
     assert name.evaluate("""node => {
       const animation = node.getAnimations()[0];
       if (animation.effect.getTiming().iterations !== Infinity) return [];
@@ -358,23 +361,78 @@ def test_speed_badge_uses_visible_order_and_ignores_repeated_clicks(page: Page, 
       });
     }""") == [1, 0, 1, 0, 1]
     assert len(pending) == 1
+    harness.payload['active'] = harness.payload['candidates'][2]
     harness.handler(pending[0])
+    expect(name).not_to_have_class('switching')
+    expect(name).to_have_text('Regular VLESS')
     expect(badge).to_be_enabled()
     assert [r['body'] for r in harness.requests if r['path'] == '/api/select'] == [{'id': 'vless-id'}]
 
 
-def test_startup_panel_replaces_provisional_hero_until_ready(page: Page, web_app_html: str):
+def test_failed_manual_switch_restores_previous_name(page: Page, web_app_html: str):
+    harness = open_app(page, web_app_html)
+    pending = []
+    page.route('**/api/select', lambda route: pending.append(route))
+    page.locator('[data-select="vless-id"]').click()
+    name = page.locator('#activeName')
+    expect(name).to_have_text('Regular VLESS')
+    pending[0].fulfill(status=409, json={'error': 'Ошибка переключения'}, headers=harness.cors_headers)
+    expect(name).to_have_text('Active Finland')
+    expect(name).not_to_have_class('switching')
+
+
+def test_existing_switch_shows_target_until_job_ends(page: Page, web_app_html: str):
+    payload = base_payload()
+    payload['jobs']['switch'].update(running=True, target_name='Regular VLESS')
+    harness = open_app(page, web_app_html, payload)
+    name = page.locator('#activeName')
+    expect(name).to_have_text('Regular VLESS')
+    expect(name).to_have_class('switching')
+    harness.payload['jobs']['switch'] = {'running': False}
+    page.evaluate('fetchStatus(true)')
+    expect(name).to_have_text('Active Finland')
+    expect(name).not_to_have_class('switching')
+
+
+def test_opening_ui_does_not_show_startup_panel(page: Page, web_app_html: str):
+    pending = []
+    harness = ApiHarness(base_payload())
+    page.route("**/api/**", harness.handler)
+    page.route("**/api/status", lambda route: pending.append(route))
+    page.set_content(web_app_html, wait_until="domcontentloaded")
+    panel = page.locator('#startupPanel')
+    expect(panel).to_be_hidden()
+    expect(page.locator('#activeName')).to_be_visible()
+    # An ordinary subscription refresh also leaves the status area in place.
+    harness.payload['jobs']['refresh'].update(running=True)
+    harness.handler(pending[0])
+    expect(page.locator('#activeName')).to_have_text('Active Finland')
+    expect(panel).to_be_hidden()
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_startup_panel_replaces_only_status_until_ready(page: Page, web_app_html: str, width: int):
+    page.set_viewport_size({'width': width, 'height': 900})
     payload = base_payload()
     steps = ['Загрузка подписки', 'Проверка внешнего правила OpenWrt']
     payload['jobs']['refresh'].update(startup=True, running=True, steps=steps)
     harness = open_app(page, web_app_html, payload)
+    panel = page.locator('#startupPanel')
+    expect(panel).to_be_visible()
     expect(page.locator('#startupSteps li')).to_have_text(steps)
     expect(page.locator('#heroInfoStage')).to_be_hidden()
-    expect(page.locator('#activeName')).to_be_hidden()
+    header = [page.locator(selector) for selector in ('#trafficButton', '#activeName', '#throughputBadge')]
+    for item in header:
+        expect(item).to_be_visible()
+    positions = [item.bounding_box() for item in header]
+    box = panel.bounding_box()
+    assert max(pos['y'] + pos['height'] for pos in positions) <= box['y']
+    assert box['y'] + box['height'] <= page.locator('#testAllButton').bounding_box()['y']
     harness.payload['jobs']['refresh'].update(startup=False, running=False)
-    expect(page.locator('#startupPanel')).to_be_hidden()
+    page.evaluate('fetchStatus(true)')
+    expect(panel).to_be_hidden()
     expect(page.locator('#heroInfoStage')).to_be_visible()
-    expect(page.locator('#activeName')).to_have_text('Active Finland')
+    assert [item.bounding_box() for item in header] == positions
 
 
 def test_traffic_control_and_repeated_mode_changes_follow_server_state(page: Page, web_app_html: str) -> None:

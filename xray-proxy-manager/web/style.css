@@ -1000,10 +1000,8 @@ body.modal-open { overflow: hidden; }
 
 #subscriptionAttemptLog { white-space: pre-line; }
 
-.hero-card.starting .hero-primary-row,
 .hero-card.starting #heroInfoStage,
 .hero-card:not(.starting) .startup-panel { display: none; }
-.hero-card.starting { grid-template-rows: minmax(0, 1fr); }
 .startup-panel {
   flex: 1;
   padding: 12px 14px;
