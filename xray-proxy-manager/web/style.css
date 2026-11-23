@@ -802,7 +802,6 @@ body.modal-open { overflow: hidden; }
   .hero-details { gap: 4px; }
   #activeMeta { font-size: .72rem; line-height: 1.4; }
   .traffic-hint { font-size: .71rem; }
-  #selectorHint { min-height: 2lh; }
   .hero-actions { padding-top: 12px; }
   .hero-stop { margin-left: 0; }
   .outbound-actions { gap: 7px; }

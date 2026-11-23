@@ -534,7 +534,7 @@ function renderRuntimeStatus(payload, drainingSlot) {
 
   const count = reported && selector.connections_supported ? drainingSlot?.drain_connections : null;
   $('selectorHint').textContent = drainingSlot
-    ? `Завершение соединений селектора [${drainingSlot.tag}] в количестве: ${count ?? '—'} шт.`
+    ? `Осталось соединений [${drainingSlot.tag}]: ${count ?? '—'}`
     : '';
 }
 

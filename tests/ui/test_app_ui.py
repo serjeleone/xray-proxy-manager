@@ -209,7 +209,7 @@ def test_initial_render_exposes_runtime_state_and_dynamic_preferences(page: Page
     expect(page.locator("#xrayState")).to_have_text("Xray работает · Текущий активный селектор: [xray-b]")
     expect(page.locator("#activeMeta")).to_contain_text("192.0.2.250:10809 (SOCKS)")
     expect(page.locator("#selectorHint")).to_have_text(
-        "Завершение соединений селектора [xray-a] в количестве: 14 шт."
+        "Осталось соединений [xray-a]: 14"
     )
     assert card_names(page)[:2] == ["Active Finland", "Draining Germany"]
     expect(page.locator("#outboundList")).not_to_contain_text("Только в слоте")
@@ -226,13 +226,14 @@ def test_selector_status_keeps_drain_row_height(page: Page, web_app_html: str, w
     actions = page.locator('.hero-actions')
     card = page.locator('#heroCard')
     baseline = (row.bounding_box()['height'], actions.bounding_box()['y'], card.bounding_box()['height'])
-    assert baseline[0] > 0
+    line_height = row.evaluate("el => parseFloat(getComputedStyle(el).lineHeight)")
+    assert baseline[0] == pytest.approx(line_height, abs=0.1)
     slot = harness.payload['blue_green']['slots']['xray-a']
     for draining, count in [(False, 0), (True, 12345), (True, 0), (False, 0)]:
         slot.update(draining=draining, drain_connections=count)
         page.evaluate('fetchStatus(true)')
         expect(row).to_have_text(
-            f'Завершение соединений селектора [xray-a] в количестве: {count} шт.' if draining else ''
+            f'Осталось соединений [xray-a]: {count}' if draining else ''
         )
         geometry = (row.bounding_box()['height'], actions.bounding_box()['y'], card.bounding_box()['height'])
         assert geometry == pytest.approx(baseline, abs=0.1)
