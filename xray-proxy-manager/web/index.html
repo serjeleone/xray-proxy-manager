@@ -6,9 +6,9 @@
   <meta name="theme-color" content="#121212">
   <title>Xray Proxy Manager</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?ui=41">
+  <link rel="stylesheet" href="style.css?ui=42">
   <script id="initialStatus" type="application/json"><!--XPM_STATUS--></script>
-  <script src="app.js?ui=34" defer blocking="render"></script>
+  <script src="app.js?ui=35" defer blocking="render"></script>
 </head>
 <body>
   <main class="shell" style="visibility: hidden">
@@ -64,7 +64,8 @@
             </div>
             <p id="activeMeta">Ожидание данных</p>
             <p id="trafficHint" class="traffic-hint">Проверка внешнего правила…</p>
-            <p id="selectorHint" class="traffic-hint">Проверка состояния selector…</p>
+            <p id="selectorWarning" class="traffic-hint warn hidden"></p>
+            <p id="selectorHint" class="traffic-hint"></p>
             <div id="routerSetup" class="router-setup hidden">
               <span>Ключ <code id="routerKeyName">—</code>: добавьте открытую часть в <code>/etc/dropbear/authorized_keys</code>:</span>
               <code id="routerPublicKey" class="public-key"></code>

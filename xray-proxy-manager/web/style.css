@@ -146,6 +146,7 @@ h1 { margin: 5px 0 0; font-size: clamp(1.45rem, 4vw, 2.15rem); letter-spacing: -
   -webkit-line-clamp: 2;
   overflow: hidden;
 }
+#selectorHint { min-height: 1lh; }
 .traffic-hint.bad { color: #ff9aa4; }
 .traffic-hint.warn { color: #ffd187; }
 .public-key { display: block; max-height: 3.2em; overflow: auto; color: #d8f9e3; overflow-wrap: anywhere; user-select: all; }
@@ -801,6 +802,7 @@ body.modal-open { overflow: hidden; }
   .hero-details { gap: 4px; }
   #activeMeta { font-size: .72rem; line-height: 1.4; }
   .traffic-hint { font-size: .71rem; }
+  #selectorHint { min-height: 2lh; }
   .hero-actions { padding-top: 12px; }
   .hero-stop { margin-left: 0; }
   .outbound-actions { gap: 7px; }

@@ -470,7 +470,6 @@ function renderTraffic(payload) {
   if (!payload.xray_running) {
     button.classList.add('error');
     $('statusDot').className = 'status-dot bad';
-    $('xrayState').textContent = 'Xray остановлен';
     hint.textContent = 'Внешнее правило нельзя включить, пока активный слот не работает';
     hint.classList.add('bad');
     return;
@@ -511,39 +510,32 @@ function renderTraffic(payload) {
   }
 }
 
-function renderRuntimeStatus(payload) {
+function renderRuntimeStatus(payload, drainingSlot) {
   const selector = payload.selector || {};
-  const blueGreen = payload.blue_green || {};
-  const hint = $('selectorHint');
-  hint.className = 'traffic-hint';
+  const reported = payload.xray_running && selector.configured && selector.available;
+  const status = payload.xray_running ? 'Xray работает' : 'Xray остановлен';
+  $('xrayState').textContent = reported
+    ? `${status} · Текущий активный селектор: [${selector.current || '—'}]`
+    : status;
 
-  if (!payload.xray_running) {
-    hint.textContent = 'Активный Xray-слот не работает';
-    hint.classList.add('bad');
-    return;
+  let warning = '';
+  if (payload.xray_running) {
+    if (!selector.configured) {
+      warning = 'Управление селектором отключено. Автоматическое переключение слотов недоступно.';
+    } else if (!selector.available) {
+      warning = selector.error || 'Selector API недоступен';
+    } else if (!selector.connections_supported) {
+      warning = `${selector.error || 'Учёт соединений недоступен'}. Автоматическое завершение старого слота приостановлено.`;
+    }
   }
-  if (!selector.configured) {
-    hint.textContent = 'Управление selector отключено; автоматическое переключение слотов недоступно';
-    hint.classList.add('warn');
-    return;
-  }
-  if (!selector.available) {
-    $('statusDot').className = 'status-dot warn';
-    hint.textContent = selector.error || 'Selector API недоступен';
-    hint.classList.add('warn');
-    return;
-  }
-  const currentSelector = selector.current || '—';
-  const drainingSlot = Object.values(blueGreen.slots || {}).find((slot) => slot.draining);
-  hint.textContent = `Текущий активный селектор: [${currentSelector}]`;
-  if (drainingSlot) {
-    hint.textContent += ` · Завершение соединений селектора [${drainingSlot.tag}] в количестве: ${drainingSlot.drain_connections || 0} шт.`;
-  }
-  if (!selector.connections_supported) {
-    $('statusDot').className = 'status-dot warn';
-    hint.append(document.createTextNode(` · ${selector.error || 'учёт соединений недоступен'}; автоматическое завершение старого слота приостановлено`));
-    hint.classList.add('warn');
-  }
+  $('selectorWarning').textContent = warning;
+  $('selectorWarning').classList.toggle('hidden', !warning);
+  if (warning) $('statusDot').className = 'status-dot warn';
+
+  const count = reported && selector.connections_supported ? drainingSlot?.drain_connections : null;
+  $('selectorHint').textContent = drainingSlot
+    ? `Завершение соединений селектора [${drainingSlot.tag}] в количестве: ${count ?? '—'} шт.`
+    : '';
 }
 
 function initializeSettings(payload) {
@@ -602,7 +594,6 @@ function render(payload) {
   if (!$('protocolFilter').matches(':focus')) $('protocolFilter').value = backendProtocol;
 
   renderTraffic(payload);
-  renderRuntimeStatus(payload);
   const active = payload.xray_running ? payload.active : null;
   const switchJob = payload.jobs?.switch || {};
   if (!state.switchInFlight) {
@@ -611,9 +602,6 @@ function render(payload) {
     $('activeName').classList.toggle('switching', Boolean(switchJob.running));
   }
   const blueGreen = payload.blue_green || {};
-  const modeLabel = blueGreen.mode === 'single' ? 'Однослотовый режим' : 'Двухслотовый режим';
-  const slotLabel = payload.xray_running && blueGreen.active_slot ? ` · ${blueGreen.active_slot}` : '';
-  $('xrayState').textContent = `${payload.xray_running ? 'Xray работает' : 'Xray остановлен'}${slotLabel} · ${modeLabel}`;
   const activeSlot = blueGreen.slots?.[blueGreen.active_slot];
   const haHost = payload.home_assistant_host || 'host';
   const inboundEndpoint = activeSlot
@@ -624,6 +612,7 @@ function render(payload) {
     : 'Outbound не определён';
   const activeMeta = `${inboundEndpoint} · ${outboundEndpoint}`;
   const drainingSlot = Object.values(blueGreen.slots || {}).find((slot) => slot.draining);
+  renderRuntimeStatus(payload, drainingSlot);
   $('activeMeta').textContent = activeMeta;
   const topStop = $('stopDrainTopButton');
   if (drainingSlot) {

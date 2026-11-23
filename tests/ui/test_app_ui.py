@@ -206,16 +206,45 @@ def card_names(page: Page) -> list[str]:
 def test_initial_render_exposes_runtime_state_and_dynamic_preferences(page: Page, web_app_html: str) -> None:
     open_app(page, web_app_html)
 
-    expect(page.locator("#xrayState")).to_have_text("Xray работает · xray-b · Двухслотовый режим")
+    expect(page.locator("#xrayState")).to_have_text("Xray работает · Текущий активный селектор: [xray-b]")
     expect(page.locator("#activeMeta")).to_contain_text("192.0.2.250:10809 (SOCKS)")
     expect(page.locator("#selectorHint")).to_have_text(
-        "Текущий активный селектор: [xray-b] · Завершение соединений селектора [xray-a] в количестве: 14 шт."
+        "Завершение соединений селектора [xray-a] в количестве: 14 шт."
     )
     assert card_names(page)[:2] == ["Active Finland", "Draining Germany"]
     expect(page.locator("#outboundList")).not_to_contain_text("Только в слоте")
     assert page.locator("#autoSwitchPreferredProtocol option").all_text_contents() == [
         "Без приоритета", "TROJAN", "VLESS", "VMESS"
     ]
+
+
+@pytest.mark.parametrize('width', [320, 390, 768, 1440])
+def test_selector_status_keeps_drain_row_height(page: Page, web_app_html: str, width: int):
+    page.set_viewport_size({'width': width, 'height': 900})
+    harness = open_app(page, web_app_html)
+    row = page.locator('#selectorHint')
+    actions = page.locator('.hero-actions')
+    card = page.locator('#heroCard')
+    baseline = (row.bounding_box()['height'], actions.bounding_box()['y'], card.bounding_box()['height'])
+    assert baseline[0] > 0
+    slot = harness.payload['blue_green']['slots']['xray-a']
+    for draining, count in [(False, 0), (True, 12345), (True, 0), (False, 0)]:
+        slot.update(draining=draining, drain_connections=count)
+        page.evaluate('fetchStatus(true)')
+        expect(row).to_have_text(
+            f'Завершение соединений селектора [xray-a] в количестве: {count} шт.' if draining else ''
+        )
+        geometry = (row.bounding_box()['height'], actions.bounding_box()['y'], card.bounding_box()['height'])
+        assert geometry == pytest.approx(baseline, abs=0.1)
+    # The selector's reported value may differ from the manager's expected slot.
+    harness.payload['selector']['current'] = 'xray-a'
+    page.evaluate('fetchStatus(true)')
+    expect(page.locator('#xrayState')).to_have_text('Xray работает · Текущий активный селектор: [xray-a]')
+    harness.payload['selector'].update(available=False, error='Selector API недоступен')
+    page.evaluate('fetchStatus(true)')
+    expect(page.locator('#xrayState')).to_have_text('Xray работает')
+    expect(page.locator('#selectorWarning')).to_have_text('Selector API недоступен')
+    expect(row).to_be_empty()
 
 
 def test_active_and_draining_candidates_bypass_filters_and_remain_pinned(page: Page, web_app_html: str) -> None:
@@ -483,7 +512,7 @@ def test_traffic_control_and_repeated_mode_changes_follow_server_state(page: Pag
     page.on('dialog', lambda dialog: dialog.accept())
     for index, enabled in enumerate((False, True, False, True), 2):
         page.locator('#slotModeButton').click()
-        expect(page.locator('#xrayState')).to_contain_text('Двухслотовый' if enabled else 'Однослотовый')
+        expect(page.locator('#slotModeButton')).to_have_text('Режим: 2 слота' if enabled else 'Режим: 1 слот')
         wait_for_requests(page, harness, index)
         assert harness.requests[-1] == {
             'method': 'POST', 'path': '/api/mode', 'body': {'dual_slot_enabled': enabled},
